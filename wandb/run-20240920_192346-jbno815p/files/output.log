@@ -1,0 +1,36 @@
+C:\Users\coolm\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.10_qbz5n2kfra8p0\LocalCache\local-packages\Python310\site-packages\torch\utils\data\dataloader.py:557: UserWarning: This DataLoader will create 10 worker processes in total. Our suggested max number of worker in current system is 8 (`cpuset` is not taken into account), which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
+  warnings.warn(_create_warning_msg(
+C:\Users\coolm\AppData\Local\Temp\ipykernel_20792\1507249952.py:51: UserWarning: Implicit dimension choice for log_softmax has been deprecated. Change the call to include dim=X as an argument.
+  return F.log_softmax(x)
+Unsupported operator aten::tanh encountered 3 time(s)
+Unsupported operator aten::ones_like encountered 9 time(s)
+Unsupported operator aten::mul encountered 18 time(s)
+Unsupported operator aten::add encountered 9 time(s)
+Unsupported operator aten::log_softmax encountered 1 time(s)
+Total trainable parameters of VietaPell: 105856
+FLOPs of VietaPell: 106046.0
+Training:   0%|          | 0/938 [00:00<?, ?it/s]C:\Users\coolm\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.10_qbz5n2kfra8p0\LocalCache\local-packages\Python310\site-packages\torch\utils\data\dataloader.py:557: UserWarning: This DataLoader will create 10 worker processes in total. Our suggested max number of worker in current system is 8 (`cpuset` is not taken into account), which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
+  warnings.warn(_create_warning_msg(
+C:\Users\coolm\AppData\Local\Temp\ipykernel_20792\1507249952.py:51: UserWarning: Implicit dimension choice for log_softmax has been deprecated. Change the call to include dim=X as an argument.
+  return F.log_softmax(x)
+Training: 100%|██████████| 938/938 [00:34<00:00, 27.29it/s, Loss=1.67, Acc=39]  
+Epoch 1/50:
+Train Loss: 1.6591, Train Acc: 0.3905
+Test Loss: 0.5011, Test Acc: 0.8514
+Training: 100%|██████████| 938/938 [00:40<00:00, 23.21it/s, Loss=0.647, Acc=79.4]
+Epoch 2/50:
+Train Loss: 0.6418, Train Acc: 0.7939
+Test Loss: 0.3445, Test Acc: 0.8876
+Training: 100%|██████████| 938/938 [01:15<00:00, 12.43it/s, Loss=0.47, Acc=85.3] 
+Epoch 3/50:
+Train Loss: 0.4692, Train Acc: 0.8533
+Test Loss: 0.3152, Test Acc: 0.9031
+Training: 100%|██████████| 938/938 [01:17<00:00, 12.10it/s, Loss=0.396, Acc=87.6]
+Epoch 4/50:
+Train Loss: 0.3937, Train Acc: 0.8762
+Test Loss: 0.2739, Test Acc: 0.9158
+Training: 100%|██████████| 938/938 [01:03<00:00, 14.74it/s, Loss=0.347, Acc=89.1]
+Epoch 5/50:
+Train Loss: 0.3463, Train Acc: 0.8915
+Test Loss: 0.1807, Test Acc: 0.9441
+Training:   0%|          | 0/938 [00:02<?, ?it/s]

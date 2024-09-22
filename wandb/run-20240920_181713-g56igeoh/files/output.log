@@ -1,0 +1,91 @@
+C:\Users\coolm\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.10_qbz5n2kfra8p0\LocalCache\local-packages\Python310\site-packages\torch\utils\data\dataloader.py:557: UserWarning: This DataLoader will create 10 worker processes in total. Our suggested max number of worker in current system is 8 (`cpuset` is not taken into account), which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
+  warnings.warn(_create_warning_msg(
+Unsupported operator aten::tanh encountered 3 time(s)
+Unsupported operator aten::ones_like encountered 9 time(s)
+Unsupported operator aten::mul encountered 18 time(s)
+Unsupported operator aten::add encountered 9 time(s)
+Total trainable parameters of VietaPell: 105856
+FLOPs of VietaPell: 106046.0
+Training:   0%|          | 0/938 [00:00<?, ?it/s]C:\Users\coolm\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.10_qbz5n2kfra8p0\LocalCache\local-packages\Python310\site-packages\torch\utils\data\dataloader.py:557: UserWarning: This DataLoader will create 10 worker processes in total. Our suggested max number of worker in current system is 8 (`cpuset` is not taken into account), which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
+  warnings.warn(_create_warning_msg(
+Training: 100%|██████████| 938/938 [01:15<00:00, 12.44it/s, Loss=1.68, Acc=38.3]
+Epoch 1/50:
+Train Loss: 1.6715, Train Acc: 0.3834
+Test Loss: 0.4946, Test Acc: 0.8522
+Training: 100%|██████████| 938/938 [01:11<00:00, 13.06it/s, Loss=0.626, Acc=79.9]
+Epoch 2/50:
+Train Loss: 0.6256, Train Acc: 0.7987
+Test Loss: 0.3755, Test Acc: 0.8810
+Training: 100%|██████████| 938/938 [00:46<00:00, 20.35it/s, Loss=0.424, Acc=86.6]
+Epoch 3/50:
+Train Loss: 0.4240, Train Acc: 0.8658
+Test Loss: 0.2380, Test Acc: 0.9267
+Training: 100%|██████████| 938/938 [01:38<00:00,  9.53it/s, Loss=0.362, Acc=88.6]
+Epoch 4/50:
+Train Loss: 0.3608, Train Acc: 0.8865
+Test Loss: 0.2073, Test Acc: 0.9350
+Training: 100%|██████████| 938/938 [01:25<00:00, 10.96it/s, Loss=0.326, Acc=89.8]
+Epoch 5/50:
+Train Loss: 0.3249, Train Acc: 0.8980
+Test Loss: 0.2022, Test Acc: 0.9366
+Training: 100%|██████████| 938/938 [01:27<00:00, 10.76it/s, Loss=0.294, Acc=90.8]
+Epoch 6/50:
+Train Loss: 0.2941, Train Acc: 0.9083
+Test Loss: 0.2562, Test Acc: 0.9207
+Training: 100%|██████████| 938/938 [00:48<00:00, 19.32it/s, Loss=0.281, Acc=91.1]
+Epoch 7/50:
+Train Loss: 0.2802, Train Acc: 0.9107
+Test Loss: 0.1519, Test Acc: 0.9535
+Training: 100%|██████████| 938/938 [00:32<00:00, 29.06it/s, Loss=0.266, Acc=91.7]
+Epoch 8/50:
+Train Loss: 0.2648, Train Acc: 0.9174
+Test Loss: 0.1912, Test Acc: 0.9387
+Training: 100%|██████████| 938/938 [00:37<00:00, 25.18it/s, Loss=0.264, Acc=91.7]
+Epoch 9/50:
+Train Loss: 0.2623, Train Acc: 0.9174
+Test Loss: 0.1541, Test Acc: 0.9562
+Training: 100%|██████████| 938/938 [00:47<00:00, 19.84it/s, Loss=0.254, Acc=92.1]
+Epoch 10/50:
+Train Loss: 0.2529, Train Acc: 0.9211
+Test Loss: 0.1579, Test Acc: 0.9515
+Training: 100%|██████████| 938/938 [00:35<00:00, 26.06it/s, Loss=0.234, Acc=92.6]
+Epoch 11/50:
+Train Loss: 0.2340, Train Acc: 0.9259
+Test Loss: 0.1697, Test Acc: 0.9495
+Training: 100%|██████████| 938/938 [00:40<00:00, 23.13it/s, Loss=0.232, Acc=92.7]
+Epoch 12/50:
+Train Loss: 0.2316, Train Acc: 0.9267
+Test Loss: 0.1542, Test Acc: 0.9533
+Training: 100%|██████████| 938/938 [00:37<00:00, 24.74it/s, Loss=0.222, Acc=93]  
+Epoch 13/50:
+Train Loss: 0.2215, Train Acc: 0.9299
+Test Loss: 0.1753, Test Acc: 0.9463
+Training: 100%|██████████| 938/938 [00:36<00:00, 25.62it/s, Loss=0.219, Acc=93.1]
+Epoch 14/50:
+Train Loss: 0.2179, Train Acc: 0.9311
+Test Loss: 0.1797, Test Acc: 0.9444
+Training: 100%|██████████| 938/938 [00:46<00:00, 20.05it/s, Loss=0.218, Acc=93.2]
+Epoch 15/50:
+Train Loss: 0.2171, Train Acc: 0.9323
+Test Loss: 0.1474, Test Acc: 0.9537
+Training: 100%|██████████| 938/938 [00:32<00:00, 28.45it/s, Loss=0.211, Acc=93.4]
+Epoch 16/50:
+Train Loss: 0.2112, Train Acc: 0.9340
+Test Loss: 0.1490, Test Acc: 0.9513
+Training: 100%|██████████| 938/938 [00:45<00:00, 20.83it/s, Loss=0.21, Acc=93.6] 
+Epoch 17/50:
+Train Loss: 0.2095, Train Acc: 0.9357
+Test Loss: 0.1503, Test Acc: 0.9535
+Training: 100%|██████████| 938/938 [00:51<00:00, 18.16it/s, Loss=0.205, Acc=93.6]
+Epoch 18/50:
+Train Loss: 0.2035, Train Acc: 0.9357
+Test Loss: 0.1217, Test Acc: 0.9602
+Training: 100%|██████████| 938/938 [00:34<00:00, 26.88it/s, Loss=0.203, Acc=93.7]
+Epoch 19/50:
+Train Loss: 0.2010, Train Acc: 0.9371
+Test Loss: 0.1292, Test Acc: 0.9611
+Training: 100%|██████████| 938/938 [00:37<00:00, 25.02it/s, Loss=0.199, Acc=93.8]
+Epoch 20/50:
+Train Loss: 0.1982, Train Acc: 0.9383
+Test Loss: 0.1324, Test Acc: 0.9575
+Training: 100%|██████████| 938/938 [00:38<00:00, 24.12it/s, Loss=0.195, Acc=93.9] 

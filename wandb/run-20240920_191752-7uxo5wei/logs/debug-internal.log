@@ -1,0 +1,20 @@
+{"time":"2024-09-20T19:17:54.2896681Z","level":"INFO","msg":"using version","core version":"0.18.1"}
+{"time":"2024-09-20T19:17:54.2896681Z","level":"INFO","msg":"created symlink","path":"c:\\Users\\coolm\\AI\\Basis_Functions\\wandb\\run-20240920_191752-7uxo5wei\\logs\\debug-core.log"}
+{"time":"2024-09-20T19:17:54.2912836Z","level":"INFO","msg":"using version","core version":"0.18.1"}
+{"time":"2024-09-20T19:17:54.2912836Z","level":"INFO","msg":"created symlink","path":"c:\\Users\\coolm\\AI\\Basis_Functions\\wandb\\run-20240920_191752-7uxo5wei\\logs\\debug-core.log"}
+{"time":"2024-09-20T19:17:54.2995303Z","level":"INFO","msg":"created new stream","id":"7uxo5wei"}
+{"time":"2024-09-20T19:17:54.3001685Z","level":"INFO","msg":"stream: started","id":"7uxo5wei"}
+{"time":"2024-09-20T19:17:54.3001685Z","level":"INFO","msg":"handler: started","stream_id":{"value":"7uxo5wei"}}
+{"time":"2024-09-20T19:17:54.3001685Z","level":"INFO","msg":"writer: Do: started","stream_id":{"value":"7uxo5wei"}}
+{"time":"2024-09-20T19:17:54.3008731Z","level":"INFO","msg":"sender: started","stream_id":{"value":"7uxo5wei"}}
+{"time":"2024-09-20T19:17:54.5622022Z","level":"INFO","msg":"wandb-core","!BADKEY":null}
+{"time":"2024-09-20T19:17:54.565282Z","level":"INFO","msg":"Starting system monitor"}
+{"time":"2024-09-20T19:17:54.9151843Z","level":"INFO","msg":"Pausing system monitor"}
+{"time":"2024-09-20T19:17:54.9350597Z","level":"INFO","msg":"Resuming system monitor"}
+{"time":"2024-09-20T19:17:54.9436709Z","level":"INFO","msg":"Pausing system monitor"}
+{"time":"2024-09-20T19:17:54.9760968Z","level":"INFO","msg":"Resuming system monitor"}
+{"time":"2024-09-20T19:17:55.0976171Z","level":"INFO","msg":"Pausing system monitor"}
+{"time":"2024-09-20T19:17:55.1251542Z","level":"INFO","msg":"Resuming system monitor"}
+{"time":"2024-09-20T19:17:55.2386043Z","level":"INFO","msg":"Pausing system monitor"}
+{"time":"2024-09-20T19:17:55.2592268Z","level":"INFO","msg":"Resuming system monitor"}
+{"time":"2024-09-20T19:22:43.6145473Z","level":"INFO","msg":"Pausing system monitor"}

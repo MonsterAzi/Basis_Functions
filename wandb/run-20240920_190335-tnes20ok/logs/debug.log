@@ -1,0 +1,100 @@
+2024-09-20 19:03:35,415 INFO    MainThread:29200 [wandb_setup.py:_flush():77] Current SDK version is 0.18.1
+2024-09-20 19:03:35,415 INFO    MainThread:29200 [wandb_setup.py:_flush():77] Configure stats pid to 29200
+2024-09-20 19:03:35,415 INFO    MainThread:29200 [wandb_setup.py:_flush():77] Loading settings from C:\Users\coolm\.config\wandb\settings
+2024-09-20 19:03:35,415 INFO    MainThread:29200 [wandb_setup.py:_flush():77] Loading settings from c:\Users\coolm\AI\Basis_Functions\wandb\settings
+2024-09-20 19:03:35,415 INFO    MainThread:29200 [wandb_setup.py:_flush():77] Loading settings from environment variables: {}
+2024-09-20 19:03:35,415 INFO    MainThread:29200 [wandb_setup.py:_flush():77] Applying setup settings: {'mode': None, '_disable_service': None}
+2024-09-20 19:03:35,415 INFO    MainThread:29200 [wandb_setup.py:_flush():77] Inferring run settings from compute environment: {'program': '<python with no main file>'}
+2024-09-20 19:03:35,415 INFO    MainThread:29200 [wandb_setup.py:_flush():77] Applying login settings: {}
+2024-09-20 19:03:35,415 INFO    MainThread:29200 [wandb_setup.py:_flush():77] Applying login settings: {'api_key': '***REDACTED***'}
+2024-09-20 19:03:35,415 ERROR   MainThread:29200 [wandb_setup.py:_flush():79] error in wandb.init()
+Traceback (most recent call last):
+  File "C:\Users\coolm\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.10_qbz5n2kfra8p0\LocalCache\local-packages\Python310\site-packages\IPython\core\interactiveshell.py", line 3577, in run_code
+    exec(code_obj, self.user_global_ns, self.user_ns)
+  File "C:\Users\coolm\AppData\Local\Temp\ipykernel_29200\4133626448.py", line 35, in <module>
+    wandb.init(project="mnist-vietapell", config=Config.__dict__)
+  File "C:\Users\coolm\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.10_qbz5n2kfra8p0\LocalCache\local-packages\Python310\site-packages\wandb\sdk\wandb_init.py", line 1255, in init
+    wandb._sentry.reraise(e)
+  File "C:\Users\coolm\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.10_qbz5n2kfra8p0\LocalCache\local-packages\Python310\site-packages\wandb\analytics\sentry.py", line 155, in reraise
+    raise exc.with_traceback(sys.exc_info()[2])
+  File "C:\Users\coolm\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.10_qbz5n2kfra8p0\LocalCache\local-packages\Python310\site-packages\wandb\sdk\wandb_init.py", line 1240, in init
+    wi.setup(kwargs)
+  File "C:\Users\coolm\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.10_qbz5n2kfra8p0\LocalCache\local-packages\Python310\site-packages\wandb\sdk\wandb_init.py", line 247, in setup
+    init_config = parse_config(
+  File "C:\Users\coolm\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.10_qbz5n2kfra8p0\LocalCache\local-packages\Python310\site-packages\wandb\sdk\wandb_helper.py", line 14, in parse_config
+    params = _to_dict(params)
+  File "C:\Users\coolm\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.10_qbz5n2kfra8p0\LocalCache\local-packages\Python310\site-packages\wandb\sdk\wandb_helper.py", line 42, in _to_dict
+    raise TypeError("config must be a dict or have a __dict__ attribute.")
+TypeError: config must be a dict or have a __dict__ attribute.
+2024-09-20 19:03:35,423 INFO    MainThread:29200 [wandb_init.py:_log_setup():532] Logging user logs to c:\Users\coolm\AI\Basis_Functions\wandb\run-20240920_190335-tnes20ok\logs\debug.log
+2024-09-20 19:03:35,423 INFO    MainThread:29200 [wandb_init.py:_log_setup():533] Logging internal logs to c:\Users\coolm\AI\Basis_Functions\wandb\run-20240920_190335-tnes20ok\logs\debug-internal.log
+2024-09-20 19:03:35,423 INFO    MainThread:29200 [wandb_init.py:init():616] calling init triggers
+2024-09-20 19:03:35,423 INFO    MainThread:29200 [wandb_init.py:init():623] wandb.init called with sweep_config: {}
+config: {'batch_size': 64, 'learning_rate': 0.002, 'epochs': 50, 'patience': 8, 'num_workers': 10, 'rotation': 5, 'translation': 0.1, 'shear_angle': 1}
+2024-09-20 19:03:35,423 INFO    MainThread:29200 [wandb_init.py:init():641] re-initializing run, found existing run on stack: cx7szmua
+2024-09-20 19:03:35,428 INFO    MainThread:29200 [wandb_run.py:_finish():2158] finishing run lhunos/mnist/cx7szmua
+2024-09-20 19:03:35,431 ERROR   MainThread:29200 [jupyter.py:save_history():451] Run pip install nbformat to save notebook history
+2024-09-20 19:03:35,431 INFO    MainThread:29200 [jupyter.py:save_ipynb():387] not saving jupyter notebook
+2024-09-20 19:03:35,431 INFO    MainThread:29200 [wandb_init.py:_jupyter_teardown():460] cleaning up jupyter logic
+2024-09-20 19:03:35,431 INFO    MainThread:29200 [wandb_run.py:_atexit_cleanup():2422] got exitcode: 0
+2024-09-20 19:03:35,431 INFO    MainThread:29200 [wandb_run.py:_restore():2404] restore
+2024-09-20 19:03:35,431 INFO    MainThread:29200 [wandb_run.py:_restore():2410] restore done
+2024-09-20 19:03:37,232 INFO    MainThread:29200 [wandb_run.py:_footer_history_summary_info():4037] rendering history
+2024-09-20 19:03:37,232 INFO    MainThread:29200 [wandb_run.py:_footer_history_summary_info():4069] rendering summary
+2024-09-20 19:03:37,248 INFO    MainThread:29200 [wandb_run.py:_footer_sync_info():3996] logging synced files
+2024-09-20 19:03:37,380 INFO    MainThread:29200 [wandb_init.py:init():666] starting backend
+2024-09-20 19:03:37,380 INFO    MainThread:29200 [wandb_init.py:init():670] setting up manager
+2024-09-20 19:03:37,390 INFO    MainThread:29200 [backend.py:_multiprocessing_setup():105] multiprocessing start_methods=spawn, using: spawn
+2024-09-20 19:03:37,391 INFO    MainThread:29200 [wandb_init.py:init():678] backend started and connected
+2024-09-20 19:03:37,401 INFO    MainThread:29200 [wandb_run.py:_label_probe_notebook():1340] probe notebook
+2024-09-20 19:03:37,402 INFO    MainThread:29200 [wandb_run.py:_label_probe_notebook():1350] Unable to probe notebook: 'charmap' codec can't decode byte 0x81 in position 1081: character maps to <undefined>
+2024-09-20 19:03:37,402 INFO    MainThread:29200 [wandb_init.py:init():773] updated telemetry
+2024-09-20 19:03:37,470 INFO    MainThread:29200 [wandb_init.py:init():806] communicating run to backend with 90.0 second timeout
+2024-09-20 19:03:37,662 INFO    MainThread:29200 [wandb_init.py:init():857] starting run threads in backend
+2024-09-20 19:03:37,925 INFO    MainThread:29200 [wandb_run.py:_console_start():2459] atexit reg
+2024-09-20 19:03:37,925 INFO    MainThread:29200 [wandb_run.py:_redirect():2307] redirect: wrap_raw
+2024-09-20 19:03:37,925 INFO    MainThread:29200 [wandb_run.py:_redirect():2372] Wrapping output streams.
+2024-09-20 19:03:37,925 INFO    MainThread:29200 [wandb_run.py:_redirect():2397] Redirects installed.
+2024-09-20 19:03:37,926 INFO    MainThread:29200 [wandb_init.py:init():900] run started, returning control to user process
+2024-09-20 19:17:52,569 INFO    MainThread:29200 [wandb_setup.py:_flush():77] Current SDK version is 0.18.1
+2024-09-20 19:17:52,569 INFO    MainThread:29200 [wandb_setup.py:_flush():77] Configure stats pid to 29200
+2024-09-20 19:17:52,569 INFO    MainThread:29200 [wandb_setup.py:_flush():77] Loading settings from C:\Users\coolm\.config\wandb\settings
+2024-09-20 19:17:52,569 INFO    MainThread:29200 [wandb_setup.py:_flush():77] Loading settings from c:\Users\coolm\AI\Basis_Functions\wandb\settings
+2024-09-20 19:17:52,569 INFO    MainThread:29200 [wandb_setup.py:_flush():77] Loading settings from environment variables: {}
+2024-09-20 19:17:52,569 INFO    MainThread:29200 [wandb_setup.py:_flush():77] Applying setup settings: {'mode': None, '_disable_service': None}
+2024-09-20 19:17:52,569 INFO    MainThread:29200 [wandb_setup.py:_flush():77] Inferring run settings from compute environment: {'program': '<python with no main file>'}
+2024-09-20 19:17:52,569 INFO    MainThread:29200 [wandb_setup.py:_flush():77] Applying login settings: {}
+2024-09-20 19:17:52,569 INFO    MainThread:29200 [wandb_setup.py:_flush():77] Applying login settings: {'api_key': '***REDACTED***'}
+2024-09-20 19:17:52,569 ERROR   MainThread:29200 [wandb_setup.py:_flush():79] error in wandb.init()
+Traceback (most recent call last):
+  File "C:\Users\coolm\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.10_qbz5n2kfra8p0\LocalCache\local-packages\Python310\site-packages\IPython\core\interactiveshell.py", line 3577, in run_code
+    exec(code_obj, self.user_global_ns, self.user_ns)
+  File "C:\Users\coolm\AppData\Local\Temp\ipykernel_29200\4133626448.py", line 35, in <module>
+    wandb.init(project="mnist-vietapell", config=Config.__dict__)
+  File "C:\Users\coolm\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.10_qbz5n2kfra8p0\LocalCache\local-packages\Python310\site-packages\wandb\sdk\wandb_init.py", line 1255, in init
+    wandb._sentry.reraise(e)
+  File "C:\Users\coolm\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.10_qbz5n2kfra8p0\LocalCache\local-packages\Python310\site-packages\wandb\analytics\sentry.py", line 155, in reraise
+    raise exc.with_traceback(sys.exc_info()[2])
+  File "C:\Users\coolm\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.10_qbz5n2kfra8p0\LocalCache\local-packages\Python310\site-packages\wandb\sdk\wandb_init.py", line 1240, in init
+    wi.setup(kwargs)
+  File "C:\Users\coolm\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.10_qbz5n2kfra8p0\LocalCache\local-packages\Python310\site-packages\wandb\sdk\wandb_init.py", line 247, in setup
+    init_config = parse_config(
+  File "C:\Users\coolm\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.10_qbz5n2kfra8p0\LocalCache\local-packages\Python310\site-packages\wandb\sdk\wandb_helper.py", line 14, in parse_config
+    params = _to_dict(params)
+  File "C:\Users\coolm\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.10_qbz5n2kfra8p0\LocalCache\local-packages\Python310\site-packages\wandb\sdk\wandb_helper.py", line 42, in _to_dict
+    raise TypeError("config must be a dict or have a __dict__ attribute.")
+TypeError: config must be a dict or have a __dict__ attribute.
+2024-09-20 19:17:52,578 INFO    MainThread:29200 [wandb_init.py:_log_setup():532] Logging user logs to c:\Users\coolm\AI\Basis_Functions\wandb\run-20240920_191752-7uxo5wei\logs\debug.log
+2024-09-20 19:17:52,578 INFO    MainThread:29200 [wandb_init.py:_log_setup():533] Logging internal logs to c:\Users\coolm\AI\Basis_Functions\wandb\run-20240920_191752-7uxo5wei\logs\debug-internal.log
+2024-09-20 19:17:52,578 INFO    MainThread:29200 [wandb_init.py:_jupyter_setup():478] configuring jupyter hooks <wandb.sdk.wandb_init._WandbInit object at 0x000001F19EB574C0>
+2024-09-20 19:17:52,578 INFO    MainThread:29200 [wandb_init.py:init():616] calling init triggers
+2024-09-20 19:17:52,578 INFO    MainThread:29200 [wandb_init.py:init():623] wandb.init called with sweep_config: {}
+config: {'batch_size': 64, 'learning_rate': 0.002, 'epochs': 50, 'patience': 8, 'num_workers': 10, 'rotation': 5, 'translation': 0.1, 'shear_angle': 1}
+2024-09-20 19:17:52,578 INFO    MainThread:29200 [wandb_init.py:init():641] re-initializing run, found existing run on stack: tnes20ok
+2024-09-20 19:17:52,581 INFO    MainThread:29200 [wandb_run.py:_finish():2158] finishing run lhunos/mnist/tnes20ok
+2024-09-20 19:17:52,585 INFO    MainThread:29200 [wandb_run.py:_atexit_cleanup():2422] got exitcode: 0
+2024-09-20 19:17:52,586 INFO    MainThread:29200 [wandb_run.py:_restore():2404] restore
+2024-09-20 19:17:52,586 INFO    MainThread:29200 [wandb_run.py:_restore():2410] restore done
+2024-09-20 19:17:54,087 INFO    MainThread:29200 [wandb_run.py:_footer_history_summary_info():4037] rendering history
+2024-09-20 19:17:54,087 INFO    MainThread:29200 [wandb_run.py:_footer_history_summary_info():4069] rendering summary
+2024-09-20 19:17:54,117 INFO    MainThread:29200 [wandb_run.py:_footer_sync_info():3996] logging synced files

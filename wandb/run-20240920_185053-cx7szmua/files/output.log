@@ -1,0 +1,64 @@
+C:\Users\coolm\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.10_qbz5n2kfra8p0\LocalCache\local-packages\Python310\site-packages\torch\utils\data\dataloader.py:557: UserWarning: This DataLoader will create 10 worker processes in total. Our suggested max number of worker in current system is 8 (`cpuset` is not taken into account), which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
+  warnings.warn(_create_warning_msg(
+C:\Users\coolm\AppData\Local\Temp\ipykernel_29200\565151194.py:51: UserWarning: Implicit dimension choice for softmax has been deprecated. Change the call to include dim=X as an argument.
+  return F.softmax(x)
+Unsupported operator aten::tanh encountered 3 time(s)
+Unsupported operator aten::ones_like encountered 9 time(s)
+Unsupported operator aten::mul encountered 18 time(s)
+Unsupported operator aten::add encountered 9 time(s)
+Unsupported operator aten::softmax encountered 1 time(s)
+Total trainable parameters of VietaPell: 105856
+FLOPs of VietaPell: 106046.0
+Training:   0%|          | 0/938 [00:00<?, ?it/s]C:\Users\coolm\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.10_qbz5n2kfra8p0\LocalCache\local-packages\Python310\site-packages\torch\utils\data\dataloader.py:557: UserWarning: This DataLoader will create 10 worker processes in total. Our suggested max number of worker in current system is 8 (`cpuset` is not taken into account), which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
+  warnings.warn(_create_warning_msg(
+C:\Users\coolm\AppData\Local\Temp\ipykernel_29200\565151194.py:51: UserWarning: Implicit dimension choice for softmax has been deprecated. Change the call to include dim=X as an argument.
+  return F.softmax(x)
+Training: 100%|██████████| 938/938 [00:34<00:00, 26.90it/s, Loss=2.17, Acc=29.1]
+Epoch 1/50:
+Train Loss: 2.1505, Train Acc: 0.2909
+Test Loss: 1.8276, Test Acc: 0.6326
+Training: 100%|██████████| 938/938 [00:32<00:00, 29.25it/s, Loss=1.87, Acc=60.9]
+Epoch 2/50:
+Train Loss: 1.8534, Train Acc: 0.6086
+Test Loss: 1.6646, Test Acc: 0.7995
+Training: 100%|██████████| 938/938 [00:32<00:00, 28.59it/s, Loss=1.77, Acc=69.9]
+Epoch 3/50:
+Train Loss: 1.7629, Train Acc: 0.6989
+Test Loss: 1.6559, Test Acc: 0.8062
+Training: 100%|██████████| 938/938 [00:32<00:00, 28.54it/s, Loss=1.73, Acc=74.1]
+Epoch 4/50:
+Train Loss: 1.7207, Train Acc: 0.7412
+Test Loss: 1.6180, Test Acc: 0.8452
+Training: 100%|██████████| 938/938 [01:07<00:00, 13.90it/s, Loss=1.7, Acc=77]   
+Epoch 5/50:
+Train Loss: 1.6923, Train Acc: 0.7696
+Test Loss: 1.6205, Test Acc: 0.8415
+Training: 100%|██████████| 938/938 [00:59<00:00, 15.76it/s, Loss=1.68, Acc=78.3]
+Epoch 6/50:
+Train Loss: 1.6787, Train Acc: 0.7827
+Test Loss: 1.6074, Test Acc: 0.8547
+Training: 100%|██████████| 938/938 [00:48<00:00, 19.32it/s, Loss=1.67, Acc=79.5]
+Epoch 7/50:
+Train Loss: 1.6669, Train Acc: 0.7945
+Test Loss: 1.6082, Test Acc: 0.8555
+Training: 100%|██████████| 938/938 [00:38<00:00, 24.22it/s, Loss=1.67, Acc=80.4]
+Epoch 8/50:
+Train Loss: 1.6576, Train Acc: 0.8042
+Test Loss: 1.6233, Test Acc: 0.8376
+Training: 100%|██████████| 938/938 [00:50<00:00, 18.65it/s, Loss=1.64, Acc=82.3]
+Epoch 9/50:
+Train Loss: 1.6394, Train Acc: 0.8229
+Test Loss: 1.5443, Test Acc: 0.9202
+Training: 100%|██████████| 938/938 [00:37<00:00, 25.08it/s, Loss=1.6, Acc=86.6] 
+Epoch 10/50:
+Train Loss: 1.5968, Train Acc: 0.8661
+Test Loss: 1.5445, Test Acc: 0.9194
+Training: 100%|██████████| 938/938 [00:47<00:00, 19.89it/s, Loss=1.59, Acc=87.8]
+Epoch 11/50:
+Train Loss: 1.5855, Train Acc: 0.8777
+Test Loss: 1.5377, Test Acc: 0.9256
+Training: 100%|██████████| 938/938 [00:41<00:00, 22.70it/s, Loss=1.58, Acc=88.2]
+Epoch 12/50:
+Train Loss: 1.5801, Train Acc: 0.8821
+Test Loss: 1.5352, Test Acc: 0.9273
+Training: 100%|██████████| 938/938 [00:39<00:00, 23.64it/s, Loss=1.58, Acc=88.7]

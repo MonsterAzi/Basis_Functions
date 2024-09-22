@@ -1,0 +1,31 @@
+{
+  "os": "Windows-10-10.0.22631-SP0",
+  "python": "3.10.11",
+  "startedAt": "2024-09-20T18:50:55.565529Z",
+  "program": "c:\\Users\\coolm\\AI\\Basis_Functions\\VietaPell.ipynb",
+  "git": {
+    "remote": "https://github.com/seydi1370/Basis_Functions.git",
+    "commit": "880d60daab2e9285fd8ea164dd40643d13897efd"
+  },
+  "email": "tristen@keltor.org",
+  "root": "c:\\Users\\coolm\\AI\\Basis_Functions",
+  "host": "MSI",
+  "username": "coolm",
+  "executable": "C:\\Users\\coolm\\AppData\\Local\\Microsoft\\WindowsApps\\PythonSoftwareFoundation.Python.3.10_qbz5n2kfra8p0\\python.exe",
+  "codePathLocal": "VietaPell.ipynb",
+  "cpu_count": 4,
+  "cpu_count_logical": 8,
+  "disk": {
+    "/": {
+      "total": "490752438272",
+      "used": "405586235392"
+    }
+  },
+  "memory": {
+    "total": "16867569664"
+  },
+  "cpu": {
+    "count": 4,
+    "countLogical": 8
+  }
+}

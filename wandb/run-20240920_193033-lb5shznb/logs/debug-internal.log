@@ -1,0 +1,11 @@
+{"time":"2024-09-20T19:30:36.072553Z","level":"INFO","msg":"using version","core version":"0.18.1"}
+{"time":"2024-09-20T19:30:36.072553Z","level":"INFO","msg":"created symlink","path":"c:\\Users\\coolm\\AI\\Basis_Functions\\wandb\\run-20240920_193033-lb5shznb\\logs\\debug-core.log"}
+{"time":"2024-09-20T19:30:36.0736276Z","level":"INFO","msg":"using version","core version":"0.18.1"}
+{"time":"2024-09-20T19:30:36.0736276Z","level":"INFO","msg":"created symlink","path":"c:\\Users\\coolm\\AI\\Basis_Functions\\wandb\\run-20240920_193033-lb5shznb\\logs\\debug-core.log"}
+{"time":"2024-09-20T19:30:36.0789566Z","level":"INFO","msg":"created new stream","id":"lb5shznb"}
+{"time":"2024-09-20T19:30:36.0794922Z","level":"INFO","msg":"stream: started","id":"lb5shznb"}
+{"time":"2024-09-20T19:30:36.0794922Z","level":"INFO","msg":"handler: started","stream_id":{"value":"lb5shznb"}}
+{"time":"2024-09-20T19:30:36.0794922Z","level":"INFO","msg":"sender: started","stream_id":{"value":"lb5shznb"}}
+{"time":"2024-09-20T19:30:36.0794922Z","level":"INFO","msg":"writer: Do: started","stream_id":{"value":"lb5shznb"}}
+{"time":"2024-09-20T19:30:36.4092829Z","level":"INFO","msg":"wandb-core","!BADKEY":null}
+{"time":"2024-09-20T19:30:36.4109325Z","level":"INFO","msg":"Starting system monitor"}
