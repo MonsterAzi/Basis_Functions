@@ -1,0 +1,24 @@
+wandb:
+  project: rf_mnist
+
+metadata:
+  name: rf-mnist-sweep
+
+parameters:
+  lr:
+    value: 3e-3
+  epochs:
+    value: 100
+  batch_size:
+    value: 256
+  n_layers:
+    distribution: int_uniform
+    min: 4
+    max: 10
+  n_heads:
+    distribution: int_uniform
+    min: 4
+    max: 8
+  dim:
+    distribution: categorical
+    values: [64, 128, 256]

@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-import torch.optim as optim
+import torch.nn.functional as F
 from tqdm import tqdm
 import time
 from torchvision import datasets
@@ -9,65 +9,91 @@ from torch.utils.data import DataLoader
 import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.metrics import f1_score, cohen_kappa_score, accuracy_score, classification_report, confusion_matrix
-import seaborn as sns
 from dataclasses import dataclass
-# from fvcore.nn import FlopCountAnalysis
+from fvcore.nn import FlopCountAnalysis
+import wandb
+import seaborn as sns
+from soap import SOAP
+import math
 
 # Set device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 @dataclass
 class Config:
-    batch_size: int = 64
-    learning_rate: float = 0.002
-    epochs: int = 20
-    patience: int = 3
-    num_workers: int = 1
-    rotation: int = 3
-    translation: float = 0.06
-    shear_angle: int = 0.6
+    batch_size: int = 128
+    learning_rate: float = 7e-4
+    epochs: int = 50
+    patience: int = 10
+    num_workers: int = 10
+    rotation: int = 5
+    translation: float = 0.1
+    shear_angle: int = 1
+    betas: tuple[float,float] = (0.9, 0.95)
+    eps: float = 1e-8
+    weight_decay: float = 1e-2
+    precondition_frequency: int = 4
 
-def vieta_pell(n, x):
-    if n == 0:
-        return 2 * torch.ones_like(x)
-    elif n == 1:
-        return x
-    else:
-        return x * vieta_pell(n - 1, x) + vieta_pell(n - 2, x)
+# Initialize wandb
+run = wandb.init(
+    # Set the project where this run will be logged
+    project="mnist",
+    # Track hyperparameters and run metadata
+    config={
+        "batch_size": Config.batch_size,
+        "learning_rate": Config.learning_rate,
+        "epochs": Config.epochs,
+        "patience": Config.patience,
+        "num_workers": Config.num_workers,
+        "rotation": Config.rotation,
+        "translation": Config.translation,
+        "shear_angle": Config.shear_angle
+    },
+)
 
-class VietaPellKANLayer(nn.Module):
-    def __init__(self, input_dim, output_dim, degree):
-        super(VietaPellKANLayer, self).__init__()
-        self.input_dim = input_dim
-        self.output_dim = output_dim
+class HigherOrderLayer(nn.Module):
+    def __init__(self, input_size, output_size, degree):
+        super(HigherOrderLayer, self).__init__()
+        self.input_size = input_size
+        self.output_size = output_size
         self.degree = degree
-        self.vp_coeffs = nn.Parameter(torch.empty(input_dim, output_dim, degree + 1))
-        nn.init.normal_(self.vp_coeffs, mean=0.0, std=1 / (input_dim * (degree + 1)))
+
+        # Create a single weight matrix for all degrees
+        self.weight = nn.Parameter(torch.Tensor(output_size, input_size * (degree + 1)))
+        self.bias = nn.Parameter(torch.Tensor(output_size))
+
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        nn.init.kaiming_uniform_(self.weight, a=math.sqrt(5))
+        fan_in, _ = nn.init._calculate_fan_in_and_fan_out(self.weight)
+        bound = 1 / math.sqrt(fan_in)
+        nn.init.uniform_(self.bias, -bound, bound)
 
     def forward(self, x):
-        # Normalize x to [-1, 1] using tanh
-        x = torch.tanh(x)
-
-        # Compute the Vieta-Pell basis functions
-        vp_basis = []
-        for n in range(self.degree + 1):
-            vp_basis.append(vieta_pell(n, x))
-        vp_basis = torch.stack(vp_basis, dim=-1)  # shape = (batch_size, input_dim, degree + 1)
-
-        # Compute the Vieta-Pell interpolation
-        y = torch.einsum("bid,iod->bo", vp_basis, self.vp_coeffs)  # shape = (batch_size, output_dim)
-        y = y.view(-1, self.output_dim)
-
-        return y
+        batch_size = x.size(0)
+        
+        # Compute powers of x up to degree
+        x_powers = [x]
+        for d in range(2, self.degree + 1):
+            x_powers.append(torch.pow(x, d))
+        
+        # Concatenate all powers
+        x_concat = torch.cat([torch.ones(batch_size, 1, device=x.device)] + x_powers, dim=1)
+        
+        # Perform the higher-order transformation
+        output = F.linear(x_concat, self.weight, self.bias)
+        
+        return output
 
 class MNISTVietaPellKAN(nn.Module):
     def __init__(self):
         super(MNISTVietaPellKAN, self).__init__()
-        self.trigkan1 = VietaPellKANLayer(784, 32, 3)
+        self.trigkan1 = HigherOrderLayer(784, 32, 3)
         self.bn1 = nn.LayerNorm(32)
-        self.trigkan2 = VietaPellKANLayer(32, 32, 3)
-        self.bn2 = nn.LayerNorm(32)
-        self.trigkan3 = VietaPellKANLayer(32, 10, 3)
+        self.trigkan2 = HigherOrderLayer(32, 24, 4)
+        self.bn2 = nn.LayerNorm(24)
+        self.trigkan3 = HigherOrderLayer(24, 10, 3)
 
     def forward(self, x):
         x = x.view(-1, 28*28)
@@ -105,7 +131,7 @@ criterion = nn.CrossEntropyLoss()
 
 
 
-def train(model, train_loader, criterion, optimizer, device):
+def train(model, train_loader, criterion, optimizer, scheduler, device):
     model.train()
     total_loss = 0
     correct = 0
@@ -119,6 +145,7 @@ def train(model, train_loader, criterion, optimizer, device):
         loss = criterion(output, target)
         loss.backward()
         optimizer.step()
+        scheduler.step()
         
         total_loss += loss.item()
         _, predicted = output.max(1)
@@ -151,22 +178,39 @@ Model_Name='VietaPell'  #Add names of other models
 model0 = MNISTVietaPellKAN().to(device)
 model=model0
 total_params = sum(p.numel() for p in model0.parameters() if p.requires_grad)
-# flops = FlopCountAnalysis(model, inputs=(torch.randn(1, 28 * 28).to(device),)).total()
+flops = FlopCountAnalysis(model, inputs=(torch.randn(1, 28 * 28).to(device),)).total()
 print(f"Total trainable parameters of {Model_Name}: {total_params}")
-# print(f"FLOPs of {Model_Name}: {flops}")
+print(f"FLOPs of {Model_Name}: {flops}")
 
-def train_and_validate(model, train_loader, test_loader, criterion, optimizer, device, epochs, patience):
+def train_and_validate(model, train_loader, test_loader, criterion, optimizer, scheduler, device, epochs, patience):
     best_test_loss = float('inf')
     best_weights = None
     no_improve = 0
+    total_time = 0
     
     for epoch in range(epochs):
-        train_loss, train_acc = train(model, train_loader, criterion, optimizer, device)
+        start_time = time.time()
+        
+        train_loss, train_acc = train(model, train_loader, criterion, optimizer, scheduler, device)
         test_loss, test_acc = validate(model, test_loader, criterion, device)
+        
+        epoch_time = time.time() - start_time
+        total_time += epoch_time
+
+        # Log metrics to wandb
+        wandb.log({
+            "epoch": epoch,
+            "train_loss": train_loss,
+            "train_acc": train_acc,
+            "test_loss": test_loss,
+            "test_acc": test_acc,
+            "epoch_time": epoch_time
+        }, step=epoch+1)
         
         print(f'Epoch {epoch+1}/{epochs}:')
         print(f'Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.4f}')
-        print(f'Test Loss: {test_loss:.4f}, Test Acc: {test_acc:.4f}')
+        
+        last_epoch = epoch
         
         if test_loss < best_test_loss:
             best_test_loss = test_loss
@@ -178,12 +222,16 @@ def train_and_validate(model, train_loader, test_loader, criterion, optimizer, d
                 print(f'Early stopping after {epoch+1} epochs')
                 break
     
-    return best_weights, best_test_loss
+    return best_weights, total_time / (last_epoch + 1)
 
 
-optimizers = optim.Adam(model.parameters(), lr=Config.learning_rate)
+optimizer = SOAP(model.parameters(), lr=Config.learning_rate, betas=Config.betas, eps=Config.eps,
+                 weight_decay=Config.weight_decay, precondition_frequency=Config.precondition_frequency)
+scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=Config.learning_rate, epochs=Config.epochs, steps_per_epoch=469)
 
-best_weights, model_times = train_and_validate(model, train_loader, test_loader, criterion, optimizers, device, Config.epochs, Config.patience)
+best_weights, model_times = train_and_validate(model, train_loader, test_loader, criterion, optimizer, scheduler, device, Config.epochs, Config.patience)
+
+wandb.finish()
 
 # Save the best weights for model
 model.load_state_dict(best_weights)
