@@ -214,7 +214,7 @@ def main(CIFAR: bool = False):
     
     hyperparameter_defaults = dict(
         epochs = 25,
-        learning_rate = 1e-1,
+        learning_rate = 8e-2,
         batch_size = 256,
         beta_1 = 0.94,
         beta_2 = 0.92,
