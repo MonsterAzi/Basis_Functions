@@ -213,15 +213,15 @@ def main(CIFAR: bool = False):
     print(f"Number of parameters: {model_size}, {model_size / 1e6:2f}M")
     
     hyperparameter_defaults = dict(
-        epochs = 5,
+        epochs = 25,
         learning_rate = 7e-3,
         batch_size = 256,
-        beta_1 = 0.95,
-        beta_2 = 0.95,
-        shampoo_beta = -1,
-        weight_decay = 0.01,
+        beta_1 = 0.94,
+        beta_2 = 0.92,
+        shampoo_beta = 0.95,
+        weight_decay = 0.015,
         precondition_freq = 8,
-        eps = 1e-8
+        eps = 1e-7
     )
 
     wandb.init(config=hyperparameter_defaults, project=f"rf_{dataset_name}")
@@ -229,7 +229,7 @@ def main(CIFAR: bool = False):
 
     rf = RF(model)
     optimizer = SOAP(model.parameters(), lr=config.learning_rate)
-    # scheduler = optim.lr_scheduler.OneCycleLR(optimizer, max_lr=config.learning_rate, epochs=config.epochs, steps_per_epoch=int(6e+5//config.batch_size))
+    scheduler = optim.lr_scheduler.OneCycleLR(optimizer, max_lr=config.learning_rate, epochs=config.epochs, steps_per_epoch=int(6e+5//config.batch_size))
 
     mnist = fdatasets(root="./data", train=True, download=True, transform=transform)
     dataloader = DataLoader(mnist, batch_size=config.batch_size, shuffle=True, drop_last=True)
@@ -243,7 +243,7 @@ def main(CIFAR: bool = False):
             loss, blsct, loss_log = rf.forward(x, c)
             loss.backward()
             optimizer.step()
-            # scheduler.step()
+            scheduler.step()
 
             wandb.log({"loss": loss_log.item()})
 
