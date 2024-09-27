@@ -98,7 +98,7 @@ class RF:
         sim_compare = x + vtheta
         error = z1 - x - vtheta
         batchwise_mse = (error ** 2).mean(dim=list(range(1, len(x.shape))))
-        batchwise_loss = self.perceptual_loss(z1, sim_compare) * 1000
+        batchwise_loss = (error ** 2)
         batchwise_loss = batchwise_loss.mean(dim=list(range(1, len(x.shape))))
         tlist = batchwise_loss.detach().cpu().reshape(-1).tolist()
         ttloss = [(tv, tloss) for tv, tloss in zip(t, tlist)]
@@ -214,8 +214,8 @@ def main(CIFAR: bool = False):
     
     hyperparameter_defaults = dict(
         epochs = 5,
-        learning_rate = 1e-2,
-        batch_size = 128,
+        learning_rate = 7e-3,
+        batch_size = 256,
         beta_1 = 0.95,
         beta_2 = 0.95,
         shampoo_beta = -1,
