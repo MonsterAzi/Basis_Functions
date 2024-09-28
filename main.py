@@ -122,8 +122,8 @@ class RF:
             z = z - dt * vc
             images.append(z)
         return images
-    
-def create_mse(CIFAR: bool = False):
+
+def main(CIFAR: bool = False, RWKV: bool = False):
     if CIFAR:
         dataset_name = "cifar"
         fdatasets = datasets.CIFAR10
@@ -137,9 +137,14 @@ def create_mse(CIFAR: bool = False):
             ]
         )
         channels = 3
-        model = DiT_Llama(
-            channels, 32, dim=256, n_layers=10, n_heads=8, num_classes=10
-        ).cuda()
+        if RWKV:
+            model = DiffRWKVModel(
+                channels, 32, dim=256, n_layers=10, n_heads=8, num_classes=10
+            ).cuda()
+        else:
+            model = DiT_Llama(
+                channels, 32, dim=256, n_layers=10, n_heads=8, num_classes=10
+            ).cuda()
 
     else:
         dataset_name = "mnist"
@@ -153,74 +158,27 @@ def create_mse(CIFAR: bool = False):
             ]
         )
         channels = 1
-        model = DiT_Llama(
-            channels, 32, dim=64, n_layers=6, n_heads=4, num_classes=10
-        ).cuda()
-
-    rf = RF(model)
-    optimizer = SOAP(model.parameters(), lr=1e-2)
-    
-    mnist = fdatasets(root="./data", train=True, download=True, transform=transform)
-    dataloader = DataLoader(mnist, batch_size=128, shuffle=True, drop_last=True)
-
-    for epoch in range(15):
-        for i, (x, c) in tqdm(enumerate(dataloader)):
-            x, c = x.cuda(), c.cuda()
-            optimizer.zero_grad()
-            loss, blsct, loss_log = rf.forward(x, c)
-            loss.backward()
-            optimizer.step()
-
-        rf.model.train()
-    
-    return rf
-
-def main(CIFAR: bool = False):
-    if CIFAR:
-        dataset_name = "cifar"
-        fdatasets = datasets.CIFAR10
-        transform = v2.Compose(
-            [
-                v2.ToImage(),
-                v2.ToDtype(torch.float32, scale=True),
-                v2.RandomCrop(32),
-                v2.RandomHorizontalFlip(),
-                v2.Normalize((0.5,), (0.5,)),
-            ]
-        )
-        channels = 3
-        model = DiT_Llama(
-            channels, 32, dim=256, n_layers=10, n_heads=8, num_classes=10
-        ).cuda()
-
-    else:
-        dataset_name = "mnist"
-        fdatasets = datasets.MNIST
-        transform = v2.Compose(
-            [
-                v2.ToImage(),
-                v2.ToDtype(torch.float32, scale=True),
-                v2.Pad(2),
-                v2.Normalize((0.5,), (0.5,)),
-            ]
-        )
-        channels = 1
-        model = DiT_Llama(
-            channels, 32, dim=64, n_layers=6, n_heads=4, num_classes=10
-        ).cuda()
+        if RWKV:
+            model = DiffRWKVModel(
+                channels, 32, dim=64, n_layers=6, n_heads=4, num_classes=10
+            ).cuda()
+        else:
+            model = DiT_Llama(
+                channels, 32, dim=64, n_layers=6, n_heads=4, num_classes=10
+            ).cuda()
 
     model_size = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Number of parameters: {model_size}, {model_size / 1e6:2f}M")
     
     hyperparameter_defaults = dict(
         epochs = 25,
-        learning_rate = 8e-2,
-        batch_size = 256,
+        learning_rate = 6e-4,
+        batch_size = 56,
         beta_1 = 0.94,
         beta_2 = 0.92,
         shampoo_beta = 0.95,
-        weight_decay = 0.015,
-        precondition_freq = 8,
+        weight_decay = 0.01,
+        precondition_freq = 4,
         eps = 1e-7
     )
 
@@ -229,7 +187,7 @@ def main(CIFAR: bool = False):
 
     rf = RF(model)
     optimizer = SOAP(model.parameters(), lr=config.learning_rate)
-    scheduler = optim.lr_scheduler.OneCycleLR(optimizer, max_lr=config.learning_rate, epochs=config.epochs, steps_per_epoch=int(6e+5//config.batch_size))
+    scheduler = optim.lr_scheduler.OneCycleLR(optimizer, max_lr=config.learning_rate, epochs=config.epochs, steps_per_epoch=int(5e+4//config.batch_size))
 
     mnist = fdatasets(root="./data", train=True, download=True, transform=transform)
     dataloader = DataLoader(mnist, batch_size=config.batch_size, shuffle=True, drop_last=True)
@@ -306,5 +264,6 @@ if __name__ == "__main__":
 
     import wandb
     from dit import DiT_Llama
+    from models_drwkv import DiffRWKVModel
     
-    main()
+    typer.run(main)

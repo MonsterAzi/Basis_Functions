@@ -5,13 +5,10 @@ import math
 from functools import partial
 import einops
 
-from mmcv.runner.base_module import BaseModule, ModuleList
-
-
 T_MAX = 1024
 from torch.utils.cpp_extension import load
-wkv_cuda = load(name="wkv", sources=["cuda/wkv_op.cpp", "cuda/wkv_cuda.cu"],
-                verbose=True, extra_cuda_cflags=['-res-usage', '--maxrregcount 60', '--use_fast_math', '-O3', '-Xptxas -O3', f'-DTmax={T_MAX}'])
+# wkv_cuda = load(name="wkv", sources=["cuda/wkv_op.cpp", "cuda/wkv_cuda.cu"],
+#                 verbose=True, extra_cuda_cflags=['-res-usage', '--maxrregcount 60', '--use_fast_math', '-O3', '-Xptxas -O3', f'-DTmax={T_MAX}'])
 
 
 def get_2d_sincos_pos_embed(embed_dim, grid_size, cls_token=False, extra_tokens=0):
@@ -279,7 +276,7 @@ def q_shift(input, shift_pixel=1, gamma=1/4, patch_resolution=None):
     return output.flatten(2).transpose(1, 2)
 
 
-class VRWKV_SpatialMix(BaseModule):
+class VRWKV_SpatialMix(nn.Module):
     def __init__(self, n_embd, n_layer, layer_id, shift_mode='q_shift',
                  channel_gamma=1/4, shift_pixel=1, init_mode='fancy', 
                  key_norm=False, with_cp=False):
@@ -393,7 +390,7 @@ class VRWKV_SpatialMix(BaseModule):
         return x
 
 
-class VRWKV_ChannelMix(BaseModule):
+class VRWKV_ChannelMix(nn.Module):
     def __init__(self, n_embd, n_layer, layer_id, shift_mode='q_shift',
                  channel_gamma=1/4, shift_pixel=1, hidden_rate=4, init_mode='fancy',
                  key_norm=False, with_cp=False):
@@ -470,7 +467,7 @@ class VRWKV_ChannelMix(BaseModule):
 def modulate(x, shift, scale):
     return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
 
-class Block(BaseModule):
+class Block(nn.Module):
     def __init__(self, n_embd, n_layer, layer_id, shift_mode='q_shift',
                  channel_gamma=1/4, shift_pixel=1, drop_path=0., hidden_rate=4,
                  init_mode='fancy', layer_scale=True, post_norm=False, key_norm=False, skip=False,
