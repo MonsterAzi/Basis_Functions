@@ -138,7 +138,7 @@ def main(CIFAR: bool = False, RWKV: bool = False):
         )
         channels = 3
         if RWKV:
-            model = DiffRWKVModel(
+            model = DiT_RWKV(
                 channels, 32, dim=256, n_layers=10, n_heads=8, num_classes=10
             ).cuda()
         else:
@@ -159,8 +159,19 @@ def main(CIFAR: bool = False, RWKV: bool = False):
         )
         channels = 1
         if RWKV:
-            model = DiffRWKVModel(
-                channels, 32, dim=64, n_layers=6, n_heads=4, num_classes=10
+            args = types.SimpleNamespace()
+            args.n_layer = 6
+            args.in_channels = 3
+            args.num_classes = 10
+
+            args.head_size_a = 64
+            args.head_size_divisor = 8
+            
+            args.n_embd = 64
+            args.ctx_len = 32
+            args.vocab_size = 50304
+            model = DiT_RWKV(
+                args
             ).cuda()
         else:
             model = DiT_Llama(
@@ -173,7 +184,7 @@ def main(CIFAR: bool = False, RWKV: bool = False):
     hyperparameter_defaults = dict(
         epochs = 25,
         learning_rate = 6e-4,
-        batch_size = 56,
+        batch_size = 256,
         beta_1 = 0.94,
         beta_2 = 0.92,
         shampoo_beta = 0.95,
@@ -260,10 +271,11 @@ if __name__ == "__main__":
     from torchvision.utils import make_grid
     from tqdm import tqdm
     import torch.nn.functional as F
-    import copy
+    import copy, types
 
     import wandb
     from dit import DiT_Llama
     from models_drwkv import DiffRWKVModel
+    from New_RWKV import DiT_RWKV
     
     typer.run(main)

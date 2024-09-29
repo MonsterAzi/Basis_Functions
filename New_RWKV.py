@@ -242,10 +242,7 @@ class ChannelMix_6(nn.Module):
         kv = self.value(k)
         return torch.sigmoid(self.receptance(xr)) * kv
 
-class FeedForward():
-    pass
-
-class RWKV_Block(nn.module):
+class RWKV_Block(nn.Module):
     def __init__(self, args, layer_id):
         super().__init__()
         self.args = args
@@ -259,24 +256,43 @@ class RWKV_Block(nn.module):
 
         self.att = TimeMix_7(args, layer_id)
         self.ffn = ChannelMix_6(args, layer_id)
+
+        self.adaLN_modulation = nn.Sequential(
+            nn.SiLU(),
+            nn.Linear(min(dim, 1024), 6 * dim, bias=True),
+        )
         
-    def forward(self, x):
+    def forward(self, x, adaln_input=None):
+        if adaln_input is not None:
+            shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = (
+                self.adaLN_modulation(adaln_input).chunk(6, dim=1)
+            )
+            
+            if self.layer_id == 0:
+                x = self.ln0(x)
 
-        if self.layer_id == 0:
-            x = self.ln0(x)
+            x = x + gate_msa.unsqueeze(1) * self.att(
+                modulate(self.ln1(x), shift_msa, scale_msa)
+            )
+            x = x + gate_mlp.unsqueeze(1) * self.ffn(
+                modulate(self.ln2(x), shift_mlp, scale_mlp)
+            )
+        else:
+            if self.layer_id == 0:
+                x = self.ln0(x)
 
-        x = x + self.att(self.ln1(x))
-        x = x + self.ffn(self.ln2(x))
+            x = x + self.att(self.ln1(x))
+            x = x + self.ffn(self.ln2(x))
 
-        if RESCALE_LAYER > 0:
-            if (self.layer_id+1) % RESCALE_LAYER == 0:
-                x = x / 2
-        # if self.layer_id == args.n_layer-1:
-        #     print(torch.min(x).item(), torch.max(x).item())
+            if RESCALE_LAYER > 0:
+                if (self.layer_id+1) % RESCALE_LAYER == 0:
+                    x = x / 2
+            # if self.layer_id == args.n_layer-1:
+            #     print(torch.min(x).item(), torch.max(x).item())
 
-        return x
+            return x
 
-class FinalLayer(nn.module):
+class FinalLayer(nn.Module):
     """
     The final layer of DiT.
     """
@@ -310,22 +326,63 @@ class DiT_RWKV(nn.Module):
         assert args.n_embd % 32 == 0
         assert args.dim_att % 32 == 0
         assert args.dim_ffn % 32 == 0
+        
+        self.init_conv_seq = nn.Sequential(
+            nn.Conv2d(in_channels, dim // 2, kernel_size=5, padding=2, stride=1),
+            nn.SiLU(),
+            nn.GroupNorm(32, dim // 2),
+            nn.Conv2d(dim // 2, dim // 2, kernel_size=5, padding=2, stride=1),
+            nn.SiLU(),
+            nn.GroupNorm(32, dim // 2),
+        )
 
-        self.emb = nn.Embedding(args.vocab_size, args.n_embd)
+        self.x_embedder = nn.Linear(patch_size * patch_size * dim // 2, dim, bias=True)
+        nn.init.constant_(self.x_embedder.bias, 0)
 
-        self.blocks = nn.ModuleList([Block(args, i) for i in range(args.n_layer)])
+        self.t_embedder = TimestepEmbedder(min(dim, 1024))
+        self.y_embedder = LabelEmbedder(num_classes, min(dim, 1024), class_dropout_prob)
 
-        self.ln_out = nn.LayerNorm(args.n_embd)
-        self.head = nn.Linear(args.n_embd, args.vocab_size, bias=False)
+        self.blocks = nn.ModuleList([RWKV_Block(args, i) for i in range(args.n_layer)])
+        
+        self.final_layer = FinalLayer(dim, patch_size, self.out_channels)
+        
+    def unpatchify(self, x):
+        c = self.out_channels
+        p = self.patch_size
+        h = w = int(x.shape[1] ** 0.5)
+        x = x.reshape(shape=(x.shape[0], h, w, p, p, c))
+        x = torch.einsum("nhwpqc->nchpwq", x)
+        imgs = x.reshape(shape=(x.shape[0], c, h * p, h * p))
+        return imgs
 
-    def forward(self, idx):
+    def patchify(self, x):
+        B, C, H, W = x.size()
+        x = x.view(
+            B,
+            C,
+            H // self.patch_size,
+            self.patch_size,
+            W // self.patch_size,
+            self.patch_size,
+        )
+        x = x.permute(0, 2, 4, 1, 3, 5).flatten(-3).flatten(1, 2)
+        return x
 
-        x = self.emb(idx)
+    def forward(self, x, t, y):
+        x = self.init_conv_seq(x)
+
+        x = self.patchify(x)
+        x = self.x_embedder(x)
+
+        t = self.t_embedder(t)  # (N, D)
+        y = self.y_embedder(y, self.training)  # (N, D)
+        adaln_input = t.to(x.dtype) + y.to(x.dtype)
 
         for block in self.blocks:
-            x = block(x)
+            x = block(x, adaln_input=adaln_input)
+                
 
-        x = self.ln_out(x)
-        x = self.head(x)
-
+        x = self.final_layer(x, adaln_input)
+        x = self.unpatchify(x)  # (N, out_channels, H, W)
+        
         return x
