@@ -78,55 +78,7 @@ class LabelEmbedder(nn.Module):
         embeddings = self.embedding_table(labels)
         return embeddings
 
-class WKV_7(torch.autograd.Function):
-    @staticmethod
-    def forward(ctx, r, w, k, v, a, b):
-        with torch.no_grad():
-            B, T, C = r.size()
-            H = C // HEAD_SIZE
-            N = HEAD_SIZE
-            assert HEAD_SIZE == C // H
-            assert r.dtype == DTYPE
-            assert w.dtype == DTYPE
-            assert k.dtype == DTYPE
-            assert v.dtype == DTYPE
-            assert a.dtype == DTYPE
-            assert b.dtype == DTYPE
-            ctx.B = B
-            ctx.T = T
-            ctx.C = C
-            ctx.H = H
-            assert r.is_contiguous()
-            assert w.is_contiguous()
-            assert k.is_contiguous()
-            assert v.is_contiguous()
-            assert a.is_contiguous()
-            assert b.is_contiguous()
-            y = torch.empty((B, T, C), device=k.device, dtype=DTYPE, memory_format=torch.contiguous_format)
-            torch.ops.wkv7.forward(B, T, C, H, r, w, k, v, a, b, y)
-            return y
-    
-    @staticmethod
-    def backward(ctx, gy):
-        with torch.no_grad():
-            assert gy.dtype == torch.bfloat16
-            B = ctx.B
-            T = ctx.T
-            C = ctx.C
-            H = ctx.H
-            assert gy.is_contiguous()
-            r, w, k, v, a, b = ctx.saved_tensors
-            gr = torch.empty((B, T, C), device=gy.device, requires_grad=False, dtype=torch.bfloat16, memory_format=torch.contiguous_format)
-            gk = torch.empty((B, T, C), device=gy.device, requires_grad=False, dtype=torch.bfloat16, memory_format=torch.contiguous_format)
-            gv = torch.empty((B, T, C), device=gy.device, requires_grad=False, dtype=torch.bfloat16, memory_format=torch.contiguous_format)
-            gw = torch.empty((B, T, C), device=gy.device, requires_grad=False, dtype=torch.bfloat16, memory_format=torch.contiguous_format)
-            ga = torch.empty((B, C), device=gy.device, requires_grad=False, dtype=torch.bfloat16, memory_format=torch.contiguous_format)
-            gb = torch.empty((B, C), device=gy.device, requires_grad=False, dtype=torch.bfloat16, memory_format=torch.contiguous_format)
-            torch.ops.wkv7.backward(B, T, C, H, r, k, v, w, ab, gy, gr, gk, gv, gw, ga, gb)
-            ga = torch.sum(ga, 0).view(H, C//H)
-            gb = torch.sum(gb, 0).view(H, C//H)
-
-class TimeMix_7(nn.Module):
+class TimeMix_6(nn.Module):
     def __init__(self, args, layer_id):
         super().__init__()
         self.args = args
@@ -137,84 +89,49 @@ class TimeMix_7(nn.Module):
         assert args.dim_att % self.n_head == 0
 
         with torch.no_grad():
-            ddd = torch.empty(1, 1, args.n_embd)
-            self.time_maa_x = nn.Parameter(ddd)
-            self.time_maa_r = nn.Parameter(ddd)
-            self.time_maa_w = nn.Parameter(ddd)
-            self.time_maa_k = nn.Parameter(ddd)
-            self.time_maa_v = nn.Parameter(ddd)
-            self.time_maa_a = nn.Parameter(ddd)
-            self.time_maa_g = nn.Parameter(ddd)
+            ratio_0_to_1 = layer_id / (args.n_layers - 1)  # 0 to 1
+            ratio_1_to_almost0 = 1.0 - (layer_id / args.n_layers)  # 1 to ~0
+            ddd = torch.ones(1, 1, args.n_embd)
+            for i in range(args.n_embd):
+                ddd[0, 0, i] = i / args.n_embd
 
-            decay_speed = torch.empty(args.dim_att)
+            # fancy time_mix
+            self.time_maa_x = nn.Parameter(1.0 - torch.pow(ddd, ratio_1_to_almost0))
+            self.time_maa_w = nn.Parameter(1.0 - torch.pow(ddd, ratio_1_to_almost0))
+            self.time_maa_k = nn.Parameter(1.0 - torch.pow(ddd, ratio_1_to_almost0))
+            self.time_maa_v = nn.Parameter(1.0 - (torch.pow(ddd, ratio_1_to_almost0) + 0.3 * ratio_0_to_1))
+            self.time_maa_r = nn.Parameter(1.0 - torch.pow(ddd, 0.5 * ratio_1_to_almost0))
+            self.time_maa_g = nn.Parameter(1.0 - torch.pow(ddd, 0.5 * ratio_1_to_almost0))
+
+            D_MIX_LORA = 32 # generate TIME_MIX for w,k,v,r,g
+            self.time_maa_w1 = nn.Parameter(torch.zeros(args.n_embd, D_MIX_LORA*5))
+            self.time_maa_w2 = nn.Parameter(torch.zeros(5, D_MIX_LORA, args.n_embd).uniform_(-0.01, 0.01))
+
+            # fancy time_decay
+            decay_speed = torch.ones(args.dim_att)
+            for n in range(args.dim_att):
+                decay_speed[n] = -6 + 5 * (n / (args.dim_att - 1)) ** (0.7 + 1.3 * ratio_0_to_1)
             self.time_decay = nn.Parameter(decay_speed.reshape(1,1,args.dim_att))
 
-            self.time_faaaa = nn.Parameter(torch.empty(self.n_head,self.head_size))
-            self.time_aaaaa = nn.Parameter(torch.empty(1,1,args.dim_att))
-
-            D_MIX_LORA = 32
-            self.time_maa_w1 = nn.Parameter(torch.empty(args.n_embd, D_MIX_LORA*6))
-            self.time_maa_w2 = nn.Parameter(torch.empty(6, D_MIX_LORA, args.n_embd))
-
             D_DECAY_LORA = 64
-            self.time_decay_w1 = nn.Parameter(torch.empty(args.n_embd, D_DECAY_LORA))
-            self.time_decay_w2 = nn.Parameter(torch.empty(D_DECAY_LORA, args.dim_att))
+            self.time_decay_w1 = nn.Parameter(torch.zeros(args.n_embd, D_DECAY_LORA))
+            self.time_decay_w2 = nn.Parameter(torch.zeros(D_DECAY_LORA, args.dim_att).uniform_(-0.01, 0.01))
 
-            D_AAA_LORA = 64
-            self.time_aaa_w1 = nn.Parameter(torch.empty(args.n_embd, D_AAA_LORA))
-            self.time_aaa_w2 = nn.Parameter(torch.empty(D_AAA_LORA, args.dim_att))
+            tmp = torch.zeros(args.dim_att)
+            for n in range(args.dim_att):
+                zigzag = ((n + 1) % 3 - 1) * 0.1
+                tmp[n] = ratio_0_to_1 * (1 - (n / (args.dim_att - 1))) + zigzag
 
-            D_KKK_LORA = 64
-            self.time_kkk_w1 = nn.Parameter(torch.empty(args.n_embd, D_KKK_LORA))
-            self.time_kkk_w2 = nn.Parameter(torch.empty(D_KKK_LORA, args.dim_att))
+            self.time_faaaa = nn.Parameter(tmp.reshape(self.n_head, self.head_size))
 
-            D_GATE_LORA = 128
-            self.gate_w1 = nn.Parameter(torch.empty(args.n_embd, D_GATE_LORA))
-            self.gate_w2 = nn.Parameter(torch.empty(D_GATE_LORA, args.dim_att))
+        self.time_shift = nn.ZeroPad2d((0, 0, 1, -1))
+        self.receptance = nn.Linear(args.n_embd, args.dim_att, bias=False)
+        self.key = nn.Linear(args.n_embd, args.dim_att, bias=False)
 
-            self.time_shift = nn.ZeroPad2d((0, 0, 1, -1))
-            self.receptance = nn.Linear(args.n_embd, args.dim_att, bias=False)
-            self.key = nn.Linear(args.n_embd, args.dim_att, bias=False)
-            self.value = nn.Linear(args.n_embd, args.dim_att, bias=False)
-            self.output = nn.Linear(args.dim_att, args.n_embd, bias=False)
-            self.ln_x = nn.GroupNorm(self.n_head, args.dim_att, eps=(1e-5)*(args.head_size_divisor**2))
-
-    def forward(self, x):
-        B, T, C = x.size()
-        H = self.n_head
-        xx = self.time_shift(x) - x
-
-        xxx = x + xx * self.time_maa_x
-        xxx = torch.tanh(xxx @ self.time_maa_w1).view(B*T, 6, -1).transpose(0, 1)
-        xxx = torch.bmm(xxx, self.time_maa_w2).view(6, B, T, -1)
-        mr, mw, mk, mv, ma, mg = xxx.unbind(dim=0)
-
-        xr = x + xx * (self.time_maa_r + mr)
-        xw = x + xx * (self.time_maa_w + mw)
-        xk = x + xx * (self.time_maa_k + mk)
-        xv = x + xx * (self.time_maa_v + mv)
-        xa = x + xx * (self.time_maa_a + ma)
-        xg = x + xx * (self.time_maa_g + mg)
-
-        r = self.receptance(xr)
-        w = -F.softplus(-(self.time_decay + torch.tanh(xw @ self.time_decay_w1) @ self.time_decay_w2)) - 0.5 # soft-clamp to (-inf, -0.5)
-        k = self.key(xk)
-        v = self.value(xv)
-        g = torch.tanh(xg @ self.gate_w1) @ self.gate_w2
-
-        kk = k + torch.tanh(xk @ self.time_kkk_w1) @ self.time_kkk_w2
-        kk = F.normalize(kk, dim=-1, p=2.0)
-        a = torch.sigmoid( self.time_aaaaa + (xa @ self.time_aaa_w1) @ self.time_aaa_w2 ) * 2.0 # a is "in-context learning rate"
-
-        k = k * torch.clamp(w*0.5,max=0).exp()
-        x = RUN_CUDA_RWKV7(r, w, k, v, -kk, kk*a)
-
-        x = self.ln_x(x.view(B * T, C)).view(B, T, C)
-        
-        x = x + ((r.view(B,T,H,-1)*k.view(B,T,H,-1)*self.time_faaaa).sum(dim=-1, keepdim=True) * v.view(B,T,H,-1)).view(B,T,C)
-        
-        x = self.output(x * g)
-        return x
+        self.value = nn.Linear(args.n_embd, args.dim_att, bias=False)
+        self.output = nn.Linear(args.dim_att, args.n_embd, bias=False)
+        self.gate = nn.Linear(args.n_embd, args.dim_att, bias=False)
+        self.ln_x = nn.GroupNorm(self.n_head, args.dim_att, eps=(1e-5)*(args.head_size_divisor**2))
 
 class ChannelMix_6(nn.Module):
     def __init__(self, args, layer_id):
@@ -254,12 +171,12 @@ class RWKV_Block(nn.Module):
         if self.layer_id == 0:
             self.ln0 = nn.LayerNorm(args.n_embd)
 
-        self.att = TimeMix_7(args, layer_id)
+        self.att = TimeMix_6(args, layer_id)
         self.ffn = ChannelMix_6(args, layer_id)
 
         self.adaLN_modulation = nn.Sequential(
             nn.SiLU(),
-            nn.Linear(min(dim, 1024), 6 * dim, bias=True),
+            nn.Linear(min(args.dim, 1024), 6 * args.dim, bias=True),
         )
         
     def forward(self, x, adaln_input=None):
@@ -323,28 +240,33 @@ class DiT_RWKV(nn.Module):
         args.dim_att = args.n_embd
         args.dim_ffn = int((args.n_embd * 3.5) // 32 * 32)
 
+        self.in_channels = args.in_channels
+        self.out_channels = args.in_channels
+        self.input_size = args.input_size
+        self.patch_size = args.patch_size
+        
         assert args.n_embd % 32 == 0
         assert args.dim_att % 32 == 0
         assert args.dim_ffn % 32 == 0
         
         self.init_conv_seq = nn.Sequential(
-            nn.Conv2d(in_channels, dim // 2, kernel_size=5, padding=2, stride=1),
+            nn.Conv2d(args.in_channels, args.dim // 2, kernel_size=5, padding=2, stride=1),
             nn.SiLU(),
-            nn.GroupNorm(32, dim // 2),
-            nn.Conv2d(dim // 2, dim // 2, kernel_size=5, padding=2, stride=1),
+            nn.GroupNorm(32, args.dim // 2),
+            nn.Conv2d(args.dim // 2, args.dim // 2, kernel_size=5, padding=2, stride=1),
             nn.SiLU(),
-            nn.GroupNorm(32, dim // 2),
+            nn.GroupNorm(32, args.dim // 2),
         )
 
-        self.x_embedder = nn.Linear(patch_size * patch_size * dim // 2, dim, bias=True)
+        self.x_embedder = nn.Linear(args.patch_size * args.patch_size * args.dim // 2, args.dim, bias=True)
         nn.init.constant_(self.x_embedder.bias, 0)
 
-        self.t_embedder = TimestepEmbedder(min(dim, 1024))
-        self.y_embedder = LabelEmbedder(num_classes, min(dim, 1024), class_dropout_prob)
+        self.t_embedder = TimestepEmbedder(min(args.dim, 1024))
+        self.y_embedder = LabelEmbedder(args.num_classes, min(args.dim, 1024), args.class_dropout_prob)
 
-        self.blocks = nn.ModuleList([RWKV_Block(args, i) for i in range(args.n_layer)])
+        self.blocks = nn.ModuleList([RWKV_Block(args, i) for i in range(args.n_layers)])
         
-        self.final_layer = FinalLayer(dim, patch_size, self.out_channels)
+        self.final_layer = FinalLayer(args.dim, args.patch_size, self.out_channels)
         
     def unpatchify(self, x):
         c = self.out_channels
@@ -380,9 +302,41 @@ class DiT_RWKV(nn.Module):
 
         for block in self.blocks:
             x = block(x, adaln_input=adaln_input)
-                
 
         x = self.final_layer(x, adaln_input)
         x = self.unpatchify(x)  # (N, out_channels, H, W)
         
         return x
+
+
+def DiT_RWKV_Test(args):
+    return DiT_RWKV(args)
+
+
+if __name__ == "__main__":
+    import types
+    args = types.SimpleNamespace()
+    args.patch_size = 2
+    args.dim = 3072
+    args.n_layers = 32
+    
+    args.n_embd = 3072
+    args.in_channels=3
+    args.input_size=32
+    args.class_dropout_prob=0.1
+    args.num_classes=10
+    
+    args.head_size_a = 64
+    args.head_size_divisor = 8
+    
+    model = DiT_RWKV_Test(args)
+    model.eval()
+    x = torch.randn(2, 3, 32, 32)
+    t = torch.randint(0, 100, (2,))
+    y = torch.randint(0, 10, (2,))
+
+    with torch.no_grad():
+        out = model(x, t, y)
+        print(out.shape)
+        out = model.forward_with_cfg(x, t, y, 0.5)
+        print(out.shape)

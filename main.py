@@ -1,6 +1,7 @@
 import typer
 import torch
 import torch.nn as nn
+import math
 
 class PerceptualLoss(nn.Module):
     def __init__(self):
@@ -123,7 +124,14 @@ class RF:
             images.append(z)
         return images
 
-def main(CIFAR: bool = False, RWKV: bool = False):
+def get_batch_size(epoch, initial_batch_size, max_batch_size, total_epochs):
+    # Using a linear schedule for batch size increase
+    t = epoch / total_epochs
+    batch_size = int(initial_batch_size + (max_batch_size - initial_batch_size) * t)
+    
+    return min(batch_size, max_batch_size)
+
+def main(CIFAR: bool = False, model_type: str = ""):
     if CIFAR:
         dataset_name = "cifar"
         fdatasets = datasets.CIFAR10
@@ -137,7 +145,7 @@ def main(CIFAR: bool = False, RWKV: bool = False):
             ]
         )
         channels = 3
-        if RWKV:
+        if model_type == RWKV:
             model = DiT_RWKV(
                 channels, 32, dim=256, n_layers=10, n_heads=8, num_classes=10
             ).cuda()
@@ -158,20 +166,24 @@ def main(CIFAR: bool = False, RWKV: bool = False):
             ]
         )
         channels = 1
-        if RWKV:
+        if model_type == "RWKV":
             args = types.SimpleNamespace()
-            args.n_layer = 6
+            args.n_layers = 6
             args.in_channels = 3
             args.num_classes = 10
-
+            args.input_size = 32
             args.head_size_a = 64
             args.head_size_divisor = 8
-            
             args.n_embd = 64
-            args.ctx_len = 32
-            args.vocab_size = 50304
+            args.dim = 64
+            args.patch_size = 2
+            args.class_dropout_prob = 0.1
             model = DiT_RWKV(
                 args
+            ).cuda()
+        elif model_type == "VP":
+            model = DiT_Llama_VP(
+                channels, 32, dim=64, n_layers=3, n_heads=4, num_classes=10
             ).cuda()
         else:
             model = DiT_Llama(
@@ -182,28 +194,34 @@ def main(CIFAR: bool = False, RWKV: bool = False):
     print(f"Number of parameters: {model_size}, {model_size / 1e6:2f}M")
     
     hyperparameter_defaults = dict(
-        epochs = 25,
-        learning_rate = 6e-4,
-        batch_size = 256,
-        beta_1 = 0.94,
-        beta_2 = 0.92,
+        epochs = 5,
+        learning_rate = 1e-3,
+        initial_batch_size = 64,
+        max_batch_size = 288,
+        beta_1 = 0.95,
+        beta_2 = 0.95,
         shampoo_beta = 0.95,
-        weight_decay = 0.01,
+        weight_decay = 0,
         precondition_freq = 4,
-        eps = 1e-7
+        eps = 1e-7,
+        model_size = model_size
     )
 
-    wandb.init(config=hyperparameter_defaults, project=f"rf_{dataset_name}")
+    wandb.init(config=hyperparameter_defaults, project=f"rf_searchy")
     config = wandb.config
+    total_time = 0
 
     rf = RF(model)
     optimizer = SOAP(model.parameters(), lr=config.learning_rate)
-    scheduler = optim.lr_scheduler.OneCycleLR(optimizer, max_lr=config.learning_rate, epochs=config.epochs, steps_per_epoch=int(5e+4//config.batch_size))
+    # scheduler = optim.lr_scheduler.OneCycleLR(optimizer, max_lr=config.learning_rate, epochs=config.epochs, steps_per_epoch=int(6e+4//config.batch_size))
 
     mnist = fdatasets(root="./data", train=True, download=True, transform=transform)
-    dataloader = DataLoader(mnist, batch_size=config.batch_size, shuffle=True, drop_last=True)
 
     for epoch in range(config.epochs):
+        start_time = time.time()
+        current_batch_size = get_batch_size(epoch, config.initial_batch_size, config.max_batch_size, config.epochs)
+        dataloader = DataLoader(mnist, batch_size=current_batch_size, shuffle=True, drop_last=True)
+
         lossbin = {i: 0 for i in range(10)}
         losscnt = {i: 1e-6 for i in range(10)}
         for i, (x, c) in tqdm(enumerate(dataloader)):
@@ -212,7 +230,7 @@ def main(CIFAR: bool = False, RWKV: bool = False):
             loss, blsct, loss_log = rf.forward(x, c)
             loss.backward()
             optimizer.step()
-            scheduler.step()
+            # scheduler.step()
 
             wandb.log({"loss": loss_log.item()})
 
@@ -224,7 +242,12 @@ def main(CIFAR: bool = False, RWKV: bool = False):
         # log
         for i in range(10):
             print(f"Epoch: {epoch}, {i} range loss: {lossbin[i] / losscnt[i]}")
+        
+        epoch_time = time.time() - start_time
+        total_time += epoch_time
 
+        wandb.log({"epoch_time": epoch_time,
+                   "total_time": total_time})
         wandb.log({f"lossbin_{i}": lossbin[i] / losscnt[i] for i in range(10)})
 
         rf.model.eval()
@@ -272,10 +295,11 @@ if __name__ == "__main__":
     from tqdm import tqdm
     import torch.nn.functional as F
     import copy, types
+    import time
 
     import wandb
     from dit import DiT_Llama
-    from models_drwkv import DiffRWKVModel
+    from dit_VP import DiT_Llama_VP
     from New_RWKV import DiT_RWKV
     
     typer.run(main)
