@@ -136,6 +136,123 @@ class Attention(nn.Module):
 
         return self.wo(output)
 
+class DynamicSparseAttention(nn.Module):
+    def __init__(self, dim, n_heads, sparsity=0.1):
+        super().__init__()
+        self.n_heads = n_heads
+        self.head_dim = dim // n_heads
+        self.sparsity = sparsity
+
+        self.wq = nn.Linear(dim, n_heads * self.head_dim, bias=False)
+        self.wk = nn.Linear(dim, n_heads * self.head_dim, bias=False)
+        self.wv = nn.Linear(dim, n_heads * self.head_dim, bias=False)
+        self.wo = nn.Linear(n_heads * self.head_dim, dim, bias=False)
+
+        self.pattern_generator = nn.Sequential(
+            nn.Linear(dim, dim // 4),
+            nn.ReLU(),
+            nn.Linear(dim // 4, n_heads * (dim // n_heads) ** 2),
+            nn.Sigmoid()
+        )
+
+    def generate_sparse_mask(self, x):
+        B, L, D = x.shape
+        mask_logits = self.pattern_generator(x).view(B, self.n_heads, L, L)
+        mask = torch.bernoulli(mask_logits * self.sparsity)
+        return mask
+
+    def forward(self, x, freqs_cis):
+        bsz, seqlen, _ = x.shape
+
+        xq, xk, xv = self.wq(x), self.wk(x), self.wv(x)
+        xq = xq.view(bsz, seqlen, self.n_heads, self.head_dim)
+        xk = xk.view(bsz, seqlen, self.n_heads, self.head_dim)
+        xv = xv.view(bsz, seqlen, self.n_heads, self.head_dim)
+
+        xq, xk = Attention.apply_rotary_emb(xq, xk, freqs_cis=freqs_cis)
+        xq, xk = xq.to(x.dtype), xk.to(x.dtype)
+
+        sparse_mask = self.generate_sparse_mask(x).to(x.device)
+        attn_mask = sparse_mask * -1e9
+
+        output = F.scaled_dot_product_attention(
+            xq.permute(0, 2, 1, 3),
+            xk.permute(0, 2, 1, 3),
+            xv.permute(0, 2, 1, 3),
+            attn_mask=attn_mask,
+            dropout_p=0.0,
+            is_causal=False,
+        ).permute(0, 2, 1, 3)
+        output = output.flatten(-2)
+
+        return self.wo(output)
+
+class MultiScaleAttention(nn.Module):
+    def __init__(self, dim, n_heads, dilation_rates):
+        super().__init__()
+
+        self.n_heads = n_heads
+        self.dilation_rates = dilation_rates
+        self.head_dim = dim // n_heads
+
+        self.wq = nn.Linear(dim, n_heads * self.head_dim, bias=False)
+        self.wk = nn.Linear(dim, n_heads * self.head_dim, bias=False)
+        self.wv = nn.Linear(dim, n_heads * self.head_dim, bias=False)
+        self.wo = nn.Linear(n_heads * self.head_dim, dim, bias=False)
+
+        self.q_norm = nn.LayerNorm(n_heads * self.head_dim)
+        self.k_norm = nn.LayerNorm(n_heads * self.head_dim)
+
+    @staticmethod
+    def reshape_for_broadcast(freqs_cis, x):
+        ndim = x.ndim
+        assert 0 <= 1 < ndim
+        _freqs_cis = freqs_cis[: x.shape[1]]
+        shape = [d if i == 1 or i == ndim - 1 else 1 for i, d in enumerate(x.shape)]
+        return _freqs_cis.view(*shape)
+
+    @staticmethod
+    def apply_rotary_emb(xq, xk, freqs_cis):
+        xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))
+        xk_ = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], -1, 2))
+        freqs_cis_xq = MultiScaleAttention.reshape_for_broadcast(freqs_cis, xq_)
+        freqs_cis_xk = MultiScaleAttention.reshape_for_broadcast(freqs_cis, xk_)
+
+        xq_out = torch.view_as_real(xq_ * freqs_cis_xq).flatten(3)
+        xk_out = torch.view_as_real(xk_ * freqs_cis_xk).flatten(3)
+        return xq_out, xk_out
+
+    def forward(self, x, freqs_cis):
+        bsz, seqlen, _ = x.shape
+
+        xq, xk, xv = self.wq(x), self.wk(x), self.wv(x)
+
+        dtype = xq.dtype
+
+        xq = self.q_norm(xq)
+        xk = self.k_norm(xk)
+
+        xq = xq.view(bsz, seqlen, self.n_heads, self.head_dim)
+        xk = xk.view(bsz, seqlen, self.n_heads, self.head_dim)
+        xv = xv.view(bsz, seqlen, self.n_heads, self.head_dim)
+
+        outputs = []
+        for i, dilation_rate in enumerate(self.dilation_rates):
+            q = xq[:, :, i, :].unsqueeze(2)
+            k = xk[:, ::dilation_rate, i, :].unsqueeze(1)
+            v = xv[:, ::dilation_rate, i, :].unsqueeze(1)
+
+            attn_weights = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.head_dim)
+            attn_weights = F.softmax(attn_weights, dim=-1)
+
+            attn_output = torch.matmul(attn_weights, v)
+            outputs.append(attn_output.squeeze(2))
+
+        output = torch.stack(outputs, dim=2)
+        output = output.flatten(-2)
+
+        return self.wo(output)
+
 
 class FeedForward(nn.Module):
     def __init__(self, dim, hidden_dim, multiple_of, ffn_dim_multiplier=None):
