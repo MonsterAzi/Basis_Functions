@@ -226,7 +226,7 @@ class FinalLayer(nn.Module):
         return x
 
 
-class DiT_Llama(nn.Module):
+class DiT_Llama2(nn.Module):
     def __init__(
         self,
         in_channels=3,
@@ -345,11 +345,11 @@ class DiT_Llama(nn.Module):
 
 
 def DiT_Llama_600M_patch2(**kwargs):
-    return DiT_Llama(patch_size=2, dim=256, n_layers=16, n_heads=32, **kwargs)
+    return DiT_Llama2(patch_size=2, dim=256, n_layers=16, n_heads=32, **kwargs)
 
 
 def DiT_Llama_3B_patch2(**kwargs):
-    return DiT_Llama(patch_size=2, dim=3072, n_layers=32, n_heads=32, **kwargs)
+    return DiT_Llama2(patch_size=2, dim=3072, n_layers=32, n_heads=32, **kwargs)
 
 
 if __name__ == "__main__":

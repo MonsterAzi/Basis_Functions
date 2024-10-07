@@ -126,7 +126,7 @@ class RF:
 
 def get_batch_size(epoch, initial_batch_size, max_batch_size, total_epochs):
     # Using a linear schedule for batch size increase
-    t = epoch / total_epochs
+    t = epoch / (total_epochs - 1)
     batch_size = int(initial_batch_size + (max_batch_size - initial_batch_size) * t)
     
     return min(batch_size, max_batch_size)
@@ -145,13 +145,13 @@ def main(CIFAR: bool = False, model_type: str = ""):
             ]
         )
         channels = 3
-        if model_type == RWKV:
+        if model_type == "RWKV":
             model = DiT_RWKV(
-                channels, 32, dim=256, n_layers=10, n_heads=8, num_classes=10
+                channels, 32, dim=64, n_layers=10, n_heads=8, num_classes=10
             ).cuda()
         else:
             model = DiT_Llama(
-                channels, 32, dim=256, n_layers=10, n_heads=8, num_classes=10
+                channels, 32, dim=64, n_layers=5, n_heads=8, num_classes=10
             ).cuda()
 
     else:
@@ -183,11 +183,15 @@ def main(CIFAR: bool = False, model_type: str = ""):
             ).cuda()
         elif model_type == "VP":
             model = DiT_Llama_VP(
+                channels, 32, dim=32, n_layers=4, n_heads=4, num_classes=10
+            ).cuda()
+        elif model_type == "Hyper":
+            model = DiT_Llama2(
                 channels, 32, dim=64, n_layers=3, n_heads=4, num_classes=10
             ).cuda()
         else:
             model = DiT_Llama(
-                channels, 32, dim=64, n_layers=6, n_heads=4, num_classes=10
+                channels, 32, dim=64, n_layers=5, n_heads=4, num_classes=10
             ).cuda()
 
     model_size = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -196,12 +200,12 @@ def main(CIFAR: bool = False, model_type: str = ""):
     hyperparameter_defaults = dict(
         epochs = 5,
         learning_rate = 1e-3,
-        initial_batch_size = 64,
+        initial_batch_size = 16,
         max_batch_size = 288,
         beta_1 = 0.95,
         beta_2 = 0.95,
         shampoo_beta = 0.95,
-        weight_decay = 0,
+        weight_decay = 0.1,
         precondition_freq = 4,
         eps = 1e-7,
         model_size = model_size
@@ -301,5 +305,6 @@ if __name__ == "__main__":
     from dit import DiT_Llama
     from dit_VP import DiT_Llama_VP
     from New_RWKV import DiT_RWKV
+    from hyper_dit import DiT_Llama2
     
     typer.run(main)

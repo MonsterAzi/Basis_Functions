@@ -148,94 +148,33 @@ class LabelEmbedder(nn.Module):
         return embeddings
 
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-
 class Attention(nn.Module):
     def __init__(self, dim, n_heads):
         super().__init__()
+
         self.n_heads = n_heads
+        self.n_rep = 1
         self.head_dim = dim // n_heads
 
-        # GPTAlpha-style attention weights
         self.wq = nn.Linear(dim, n_heads * self.head_dim, bias=False)
         self.wk = nn.Linear(dim, self.n_heads * self.head_dim, bias=False)
         self.wv = nn.Linear(dim, self.n_heads * self.head_dim, bias=False)
         self.wo = nn.Linear(n_heads * self.head_dim, dim, bias=False)
 
-        # LayerNorm for q, k, v
         self.q_norm = nn.LayerNorm(self.n_heads * self.head_dim)
         self.k_norm = nn.LayerNorm(self.n_heads * self.head_dim)
-        self.v_norm = nn.LayerNorm(self.n_heads * self.head_dim)
-        
-        # DDLoRAdapt parameters
-        self.C_q = nn.Parameter(torch.randn(dim, dim))
-        self.D_q = nn.Parameter(torch.randn(dim, dim))
-        self.C_k = nn.Parameter(torch.randn(dim, dim))
-        self.D_k = nn.Parameter(torch.randn(dim, dim))
-        self.C_v = nn.Parameter(torch.randn(dim, dim))
-        self.D_v = nn.Parameter(torch.randn(dim, dim))
 
-    def ddloradapt(self, x, C, D):
-        return x + torch.tanh(x @ C) @ D
-
-    def ddlerp(self, x_t, x_t_minus_1):
-        # This is a placeholder for the ddlerp function
-        # You may need to implement this based on the specific requirements
-        return 0.5 * (x_t + x_t_minus_1)
-
-    def forward(self, x, freqs_cis):
-        bsz, seqlen, _ = x.shape
-        
-        # Assuming x_t_minus_1 is the previous timestep's input
-        # For simplicity, we'll use a shifted version of x
-        x_t_minus_1 = torch.roll(x, shifts=1, dims=1)
-        x_t_minus_1[:, 0, :] = 0  # Zero out the first token's previous state
-
-        # GPTAlpha Time Mixing
-        q_input = self.ddlerp(x, x_t_minus_1)
-        k_input = self.ddlerp(x, x_t_minus_1)
-        v_input = self.ddlerp(x, x_t_minus_1)
-
-        # Apply DDLoRAdapt
-        q_input = self.ddloradapt(q_input, self.C_q, self.D_q)
-        k_input = self.ddloradapt(k_input, self.C_k, self.D_k)
-        v_input = self.ddloradapt(v_input, self.C_v, self.D_v)
-
-        # Linear projections
-        xq, xk, xv = self.wq(q_input), self.wk(k_input), self.wv(v_input)
-
-        # Apply LayerNorm
-        xq = self.q_norm(xq)
-        xk = self.k_norm(xk)
-        xv = self.v_norm(xv)
-
-        # Reshape for multi-head attention
-        xq = xq.view(bsz, seqlen, self.n_heads, self.head_dim)
-        xk = xk.view(bsz, seqlen, self.n_heads, self.head_dim)
-        xv = xv.view(bsz, seqlen, self.n_heads, self.head_dim)
-
-        # Apply rotary embeddings (unchanged from original code)
-        xq, xk = self.apply_rotary_emb(xq, xk, freqs_cis=freqs_cis)
-
-        # Perform scaled dot-product attention
-        output = F.scaled_dot_product_attention(
-            xq.permute(0, 2, 1, 3),
-            xk.permute(0, 2, 1, 3),
-            xv.permute(0, 2, 1, 3),
-            dropout_p=0.0,
-            is_causal=False,
-        ).permute(0, 2, 1, 3)
-        
-        output = output.flatten(-2)
-
-        # Final projection
-        return self.wo(output)
+    @staticmethod
+    def reshape_for_broadcast(freqs_cis, x):
+        ndim = x.ndim
+        assert 0 <= 1 < ndim
+        # assert freqs_cis.shape == (x.shape[1], x.shape[-1])
+        _freqs_cis = freqs_cis[: x.shape[1]]
+        shape = [d if i == 1 or i == ndim - 1 else 1 for i, d in enumerate(x.shape)]
+        return _freqs_cis.view(*shape)
 
     @staticmethod
     def apply_rotary_emb(xq, xk, freqs_cis):
-        # Rotary embedding application (unchanged from original code)
         xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))
         xk_ = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], -1, 2))
         freqs_cis_xq = Attention.reshape_for_broadcast(freqs_cis, xq_)
@@ -245,14 +184,33 @@ class Attention(nn.Module):
         xk_out = torch.view_as_real(xk_ * freqs_cis_xk).flatten(3)
         return xq_out, xk_out
 
-    @staticmethod
-    def reshape_for_broadcast(freqs_cis, x):
-        # Reshaping for broadcast (unchanged from original code)
-        ndim = x.ndim
-        assert 0 <= 1 < ndim
-        _freqs_cis = freqs_cis[: x.shape[1]]
-        shape = [d if i == 1 or i == ndim - 1 else 1 for i, d in enumerate(x.shape)]
-        return _freqs_cis.view(*shape)
+    def forward(self, x, freqs_cis):
+        bsz, seqlen, _ = x.shape
+
+        xq, xk, xv = self.wq(x), self.wk(x), self.wv(x)
+
+        dtype = xq.dtype
+
+        xq = self.q_norm(xq)
+        xk = self.k_norm(xk)
+
+        xq = xq.view(bsz, seqlen, self.n_heads, self.head_dim)
+        xk = xk.view(bsz, seqlen, self.n_heads, self.head_dim)
+        xv = xv.view(bsz, seqlen, self.n_heads, self.head_dim)
+
+        xq, xk = self.apply_rotary_emb(xq, xk, freqs_cis=freqs_cis)
+        xq, xk = xq.to(dtype), xk.to(dtype)
+
+        output = F.scaled_dot_product_attention(
+            xq.permute(0, 2, 1, 3),
+            xk.permute(0, 2, 1, 3),
+            xv.permute(0, 2, 1, 3),
+            dropout_p=0.0,
+            is_causal=False,
+        ).permute(0, 2, 1, 3)
+        output = output.flatten(-2)
+
+        return self.wo(output)
 
 
 class FeedForward(nn.Module):
