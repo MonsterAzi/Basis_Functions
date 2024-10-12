@@ -72,21 +72,30 @@ class LabelEmbedder(nn.Module):
         return embeddings
 
 
+def lambda_init_fn(depth):
+    return 0.8 - 0.6 * math.exp(-0.3 * depth)
+
 class Attention(nn.Module):
-    def __init__(self, dim, n_heads):
+    def __init__(self, dim, n_heads, depth):
         super().__init__()
 
         self.n_heads = n_heads
         self.n_rep = 1
-        self.head_dim = dim // n_heads
+        self.head_dim = dim // n_heads // 2
 
-        self.wq = nn.Linear(dim, n_heads * self.head_dim, bias=False)
-        self.wk = nn.Linear(dim, self.n_heads * self.head_dim, bias=False)
-        self.wv = nn.Linear(dim, self.n_heads * self.head_dim, bias=False)
-        self.wo = nn.Linear(n_heads * self.head_dim, dim, bias=False)
+        self.wq = nn.Linear(dim, self.n_heads * self.head_dim * 2, bias=False)
+        self.wk = nn.Linear(dim, self.n_heads * self.head_dim * 2, bias=False)
+        self.wv = nn.Linear(dim, self.n_heads * self.head_dim * 2, bias=False)
+        self.wo = nn.Linear(n_heads * self.head_dim * 2, dim, bias=False)
 
-        self.q_norm = nn.LayerNorm(self.n_heads * self.head_dim)
-        self.k_norm = nn.LayerNorm(self.n_heads * self.head_dim)
+        self.lambda_init = lambda_init_fn(depth)
+        self.lambda_q1 = nn.Parameter(torch.zeros(self.head_dim, dtype=torch.float32).normal_(mean=0,std=0.1))
+        self.lambda_k1 = nn.Parameter(torch.zeros(self.head_dim, dtype=torch.float32).normal_(mean=0,std=0.1))
+        self.lambda_q2 = nn.Parameter(torch.zeros(self.head_dim, dtype=torch.float32).normal_(mean=0,std=0.1))
+        self.lambda_k2 = nn.Parameter(torch.zeros(self.head_dim, dtype=torch.float32).normal_(mean=0,std=0.1))
+
+        self.q_norm = nn.LayerNorm(self.n_heads * self.head_dim * 2)
+        self.k_norm = nn.LayerNorm(self.n_heads * self.head_dim * 2)
 
     @staticmethod
     def reshape_for_broadcast(freqs_cis, x):
@@ -111,146 +120,60 @@ class Attention(nn.Module):
     def forward(self, x, freqs_cis):
         bsz, seqlen, _ = x.shape
 
+        # Projection
         xq, xk, xv = self.wq(x), self.wk(x), self.wv(x)
+        # print(f"xq.size(): {xq.size()}")
+        # print(f"xk.size(): {xk.size()}")
+        # print(f"xv.size(): {xv.size()}")
 
         dtype = xq.dtype
 
+        # Normalization
         xq = self.q_norm(xq)
         xk = self.k_norm(xk)
 
-        xq = xq.view(bsz, seqlen, self.n_heads, self.head_dim)
-        xk = xk.view(bsz, seqlen, self.n_heads, self.head_dim)
-        xv = xv.view(bsz, seqlen, self.n_heads, self.head_dim)
+        # Reshaping for multi-head attention, considering the split for Q and K
+        xq = xq.view(bsz, seqlen, self.n_heads * 2, self.head_dim)
+        # print(f"xq.size(): {xq.size()}")
+        xk = xk.view(bsz, seqlen, self.n_heads * 2, self.head_dim)
+        # print(f"xk.size(): {xk.size()}")
+        xv = xv.view(bsz, seqlen, self.n_heads, self.head_dim * 2)
+        # print(f"xv.size(): {xv.size()}")
 
-        xq, xk = self.apply_rotary_emb(xq, xk, freqs_cis=freqs_cis)
+        # Apply rotary embedding
+        # xq, xk = self.apply_rotary_emb(xq, xk, freqs_cis=freqs_cis)
         xq, xk = xq.to(dtype), xk.to(dtype)
 
-        output = F.scaled_dot_product_attention(
-            xq.permute(0, 2, 1, 3),
-            xk.permute(0, 2, 1, 3),
-            xv.permute(0, 2, 1, 3),
-            dropout_p=0.0,
-            is_causal=False,
-        ).permute(0, 2, 1, 3)
-        output = output.flatten(-2)
+        # Splitting Q and K for differential paths
+        Q1, Q2 = xq.tensor_split(2, dim=2)
+        # print(f"Q1.size(): {Q1.size()}")
+        # print(f"Q2.size(): {Q2.size()}")
+        K1, K2 = xk.tensor_split(2, dim=2)
+        # print(f"K1.size(): {K1.size()}")
+        # print(f"K2.size(): {K2.size()}")
 
-        return self.wo(output)
+        # Scaled dot product attention for both pathways
+        s = 1 / math.sqrt(self.head_dim)
+        A1 = torch.matmul(Q1, K1.transpose(-2, -1)) * s
+        # print(f"A1.size(): {A1.size()}")
+        A2 = torch.matmul(Q2, K2.transpose(-2, -1)) * s
+        # print(f"A2.size(): {A2.size()}")
 
-class DynamicSparseAttention(nn.Module):
-    def __init__(self, dim, n_heads, sparsity=0.1):
-        super().__init__()
-        self.n_heads = n_heads
-        self.head_dim = dim // n_heads
-        self.sparsity = sparsity
+        # Lambda computation
+        lambda_1 = torch.exp(torch.sum(self.lambda_q1 * self.lambda_k1)).type_as(xq)
+        lambda_2 = torch.exp(torch.sum(self.lambda_q2 * self.lambda_k2)).type_as(xq)
+        lambda_full = lambda_1 - lambda_2 + self.lambda_init
 
-        self.wq = nn.Linear(dim, n_heads * self.head_dim, bias=False)
-        self.wk = nn.Linear(dim, n_heads * self.head_dim, bias=False)
-        self.wv = nn.Linear(dim, n_heads * self.head_dim, bias=False)
-        self.wo = nn.Linear(n_heads * self.head_dim, dim, bias=False)
+        # Differential attention mechanism
+        attention_scores = F.softmax(A1, dim=-1) - lambda_full * F.softmax(A2, dim=-1)
+        # print(f"attention_scores.size(): {attention_scores.size()}")
 
-        self.pattern_generator = nn.Sequential(
-            nn.Linear(dim, dim // 4),
-            nn.ReLU(),
-            nn.Linear(dim // 4, n_heads * (dim // n_heads) ** 2),
-            nn.Sigmoid()
-        )
+        # Apply attention to value vectors
+        output = torch.matmul(attention_scores, xv) 
+        # print(f"output.size(): {output.size()}")
 
-    def generate_sparse_mask(self, x):
-        B, L, D = x.shape
-        mask_logits = self.pattern_generator(x).view(B, self.n_heads, L, L)
-        mask = torch.bernoulli(mask_logits * self.sparsity)
-        return mask
-
-    def forward(self, x, freqs_cis):
-        bsz, seqlen, _ = x.shape
-
-        xq, xk, xv = self.wq(x), self.wk(x), self.wv(x)
-        xq = xq.view(bsz, seqlen, self.n_heads, self.head_dim)
-        xk = xk.view(bsz, seqlen, self.n_heads, self.head_dim)
-        xv = xv.view(bsz, seqlen, self.n_heads, self.head_dim)
-
-        xq, xk = Attention.apply_rotary_emb(xq, xk, freqs_cis=freqs_cis)
-        xq, xk = xq.to(x.dtype), xk.to(x.dtype)
-
-        sparse_mask = self.generate_sparse_mask(x).to(x.device)
-        attn_mask = sparse_mask * -1e9
-
-        output = F.scaled_dot_product_attention(
-            xq.permute(0, 2, 1, 3),
-            xk.permute(0, 2, 1, 3),
-            xv.permute(0, 2, 1, 3),
-            attn_mask=attn_mask,
-            dropout_p=0.0,
-            is_causal=False,
-        ).permute(0, 2, 1, 3)
-        output = output.flatten(-2)
-
-        return self.wo(output)
-
-class MultiScaleAttention(nn.Module):
-    def __init__(self, dim, n_heads, dilation_rates):
-        super().__init__()
-
-        self.n_heads = n_heads
-        self.dilation_rates = dilation_rates
-        self.head_dim = dim // n_heads
-
-        self.wq = nn.Linear(dim, n_heads * self.head_dim, bias=False)
-        self.wk = nn.Linear(dim, n_heads * self.head_dim, bias=False)
-        self.wv = nn.Linear(dim, n_heads * self.head_dim, bias=False)
-        self.wo = nn.Linear(n_heads * self.head_dim, dim, bias=False)
-
-        self.q_norm = nn.LayerNorm(n_heads * self.head_dim)
-        self.k_norm = nn.LayerNorm(n_heads * self.head_dim)
-
-    @staticmethod
-    def reshape_for_broadcast(freqs_cis, x):
-        ndim = x.ndim
-        assert 0 <= 1 < ndim
-        _freqs_cis = freqs_cis[: x.shape[1]]
-        shape = [d if i == 1 or i == ndim - 1 else 1 for i, d in enumerate(x.shape)]
-        return _freqs_cis.view(*shape)
-
-    @staticmethod
-    def apply_rotary_emb(xq, xk, freqs_cis):
-        xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))
-        xk_ = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], -1, 2))
-        freqs_cis_xq = MultiScaleAttention.reshape_for_broadcast(freqs_cis, xq_)
-        freqs_cis_xk = MultiScaleAttention.reshape_for_broadcast(freqs_cis, xk_)
-
-        xq_out = torch.view_as_real(xq_ * freqs_cis_xq).flatten(3)
-        xk_out = torch.view_as_real(xk_ * freqs_cis_xk).flatten(3)
-        return xq_out, xk_out
-
-    def forward(self, x, freqs_cis):
-        bsz, seqlen, _ = x.shape
-
-        xq, xk, xv = self.wq(x), self.wk(x), self.wv(x)
-
-        dtype = xq.dtype
-
-        xq = self.q_norm(xq)
-        xk = self.k_norm(xk)
-
-        xq = xq.view(bsz, seqlen, self.n_heads, self.head_dim)
-        xk = xk.view(bsz, seqlen, self.n_heads, self.head_dim)
-        xv = xv.view(bsz, seqlen, self.n_heads, self.head_dim)
-
-        outputs = []
-        for i, dilation_rate in enumerate(self.dilation_rates):
-            q = xq[:, :, i, :].unsqueeze(2)
-            k = xk[:, ::dilation_rate, i, :].unsqueeze(1)
-            v = xv[:, ::dilation_rate, i, :].unsqueeze(1)
-
-            attn_weights = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.head_dim)
-            attn_weights = F.softmax(attn_weights, dim=-1)
-
-            attn_output = torch.matmul(attn_weights, v)
-            outputs.append(attn_output.squeeze(2))
-
-        output = torch.stack(outputs, dim=2)
-        output = output.flatten(-2)
-
+        output = output.permute(0, 2, 1, 3).reshape(bsz, seqlen, -1)
+        # print(f"output.size(): {output.size()}")
         return self.wo(output)
 
 
@@ -261,22 +184,22 @@ class FeedForward(nn.Module):
         if ffn_dim_multiplier:
             hidden_dim = int(ffn_dim_multiplier * hidden_dim)
         hidden_dim = multiple_of * ((hidden_dim + multiple_of - 1) // multiple_of)
-
-        self.w1 = nn.Linear(dim, hidden_dim, bias=False)
-        self.w2 = nn.Linear(hidden_dim, dim, bias=False)
-        self.w3 = nn.Linear(dim, hidden_dim, bias=False)
-
-    def _forward_silu_gating(self, x1, x3):
-        return F.silu(x1) * x3
+        
+        self.ff = nn.Sequential(
+            nn.Linear(dim, int(hidden_dim*1.5), bias=False),
+            nn.SiLU(),
+            nn.Linear(int(hidden_dim*1.5), dim, bias=False),
+        )
 
     def forward(self, x):
-        return self.w2(self._forward_silu_gating(self.w1(x), self.w3(x)))
+        return self.ff(x)
 
 
 class TransformerBlock(nn.Module):
     def __init__(
         self,
         layer_id,
+        n_layers,
         dim,
         n_heads,
         multiple_of,
@@ -286,7 +209,7 @@ class TransformerBlock(nn.Module):
         super().__init__()
         self.dim = dim
         self.head_dim = dim // n_heads
-        self.attention = Attention(dim, n_heads)
+        self.attention = Attention(dim, n_heads, n_layers - layer_id)
         self.feed_forward = FeedForward(
             dim=dim,
             hidden_dim=4 * dim,
@@ -294,8 +217,8 @@ class TransformerBlock(nn.Module):
             ffn_dim_multiplier=ffn_dim_multiplier,
         )
         self.layer_id = layer_id
-        self.attention_norm = nn.LayerNorm(dim, eps=norm_eps)
-        self.ffn_norm = nn.LayerNorm(dim, eps=norm_eps)
+        self.attention_norm = nn.RMSNorm(dim, eps=norm_eps)
+        self.ffn_norm = nn.RMSNorm(dim, eps=norm_eps)
 
         self.adaLN_modulation = nn.Sequential(
             nn.SiLU(),
@@ -324,7 +247,7 @@ class TransformerBlock(nn.Module):
 class FinalLayer(nn.Module):
     def __init__(self, hidden_size, patch_size, out_channels):
         super().__init__()
-        self.norm_final = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
+        self.norm_final = nn.RMSNorm(hidden_size, elementwise_affine=False, eps=1e-6)
         self.linear = nn.Linear(
             hidden_size, patch_size * patch_size * out_channels, bias=True
         )
@@ -384,6 +307,7 @@ class DiT_Llama2(nn.Module):
             [
                 TransformerBlock(
                     layer_id,
+                    n_layers,
                     dim,
                     n_heads,
                     multiple_of,
@@ -470,6 +394,8 @@ def DiT_Llama_3B_patch2(**kwargs):
 
 
 if __name__ == "__main__":
+    from torchviz import make_dot
+    
     model = DiT_Llama_600M_patch2()
     model.eval()
     x = torch.randn(2, 3, 32, 32)
@@ -479,5 +405,13 @@ if __name__ == "__main__":
     with torch.no_grad():
         out = model(x, t, y)
         print(out.shape)
-        out = model.forward_with_cfg(x, t, y, 0.5)
-        print(out.shape)
+        out_cfg = model.forward_with_cfg(x, t, y, 0.5)
+        print(out_cfg.shape)
+
+    # Visualize the model's computational graph
+    out = model(x, t, y)
+    dot = make_dot(out, params=dict(model.named_parameters()))
+    dot.format = 'png'
+    dot.render('model_visualization')
+
+    print("Model visualization saved as 'model_visualization.png'")

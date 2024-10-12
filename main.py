@@ -167,31 +167,17 @@ def main(CIFAR: bool = False, model_type: str = ""):
         )
         channels = 1
         if model_type == "RWKV":
-            args = types.SimpleNamespace()
-            args.n_layers = 6
-            args.in_channels = 3
-            args.num_classes = 10
-            args.input_size = 32
-            args.head_size_a = 64
-            args.head_size_divisor = 8
-            args.n_embd = 64
-            args.dim = 64
-            args.patch_size = 2
-            args.class_dropout_prob = 0.1
-            model = DiT_RWKV(
-                args
-            ).cuda()
-        elif model_type == "VP":
-            model = DiT_Llama_VP(
-                channels, 32, dim=32, n_layers=4, n_heads=4, num_classes=10
-            ).cuda()
+            from New_RWKV import DiT_Llama
+        elif model_type == "test":
+            from dit_test import DiT_Llama
+        elif model_type == "best":
+            from dit_best import DiT_Llama
         elif model_type == "Hyper":
-            model = DiT_Llama2(
-                channels, 32, dim=64, n_layers=3, n_heads=4, num_classes=10
-            ).cuda()
+            from hyper_dit import DiT_Llama
         else:
-            model = DiT_Llama(
-                channels, 32, dim=64, n_layers=5, n_heads=4, num_classes=10
+            from dit import DiT_Llama
+        model = DiT_Llama(
+                channels, 32, dim=64, n_layers=3, n_heads=4, num_classes=10
             ).cuda()
 
     model_size = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -302,9 +288,5 @@ if __name__ == "__main__":
     import time
 
     import wandb
-    from dit import DiT_Llama
-    from dit_VP import DiT_Llama_VP
-    from New_RWKV import DiT_RWKV
-    from hyper_dit import DiT_Llama2
     
     typer.run(main)
