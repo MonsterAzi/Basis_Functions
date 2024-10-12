@@ -109,38 +109,38 @@ class Attention(nn.Module):
         return xq_out, xk_out
 
     def forward(self, x, freqs_cis):
-        bsz, seqlen, _ = x.shape
-
-        xq = self.wq(x)
-        xk = self.wk(x)
-        xv = self.wv(x)
-
-        dtype = xq.dtype
-
-        xq = self.q_norm(xq)
-        xk = self.k_norm(xk)
+        bsz, seqlen, _ = x.shape  # (bsz, seqlen, ...)
         
-        xq = xq.view(bsz, seqlen, self.n_heads, self.head_dim)
-        xk = xk.view(bsz, seqlen, self.n_heads, self.head_dim)
-        xv = xv.view(bsz, seqlen, self.n_heads, self.head_dim)
+        xq = self.wq(x)  # (bsz, seqlen, d_model)
+        xk = self.wk(x)  # (bsz, seqlen, d_model)
+        xv = self.wv(x)  # (bsz, seqlen, d_model)
 
-        xq, xk = self.apply_rotary_emb(xq, xk, freqs_cis=freqs_cis)
-        xq, xk = xq.to(dtype), xk.to(dtype)
+        dtype = xq.dtype  
 
-        xq = xq.permute(0, 2, 1, 3)
-        xk = xk.permute(0, 2, 1, 3)
-        xv = xv.permute(0, 2, 1, 3)
+        xq = self.q_norm(xq)  # (bsz, seqlen, d_model)
+        xk = self.k_norm(xk)  # (bsz, seqlen, d_model)
         
-        scale = 1 / math.sqrt(xq.size(-1))
-        scores = xq @ xk.transpose(-2, -1) * scale
-        scores += torch.zeros(xq.size(-2), xk.size(-2), dtype=dtype, device=xq.device)
-        attn_weights = F.softmax(scores, dim=-1)
+        xq = xq.view(bsz, seqlen, self.n_heads, self.head_dim)  # (bsz, seqlen, n_heads, d_head)
+        xk = xk.view(bsz, seqlen, self.n_heads, self.head_dim)  # (bsz, seqlen, n_heads, d_head)
+        xv = xv.view(bsz, seqlen, self.n_heads, self.head_dim)  # (bsz, seqlen, n_heads, d_head)
 
-        output = attn_weights @ xv
-        output = output.permute(0, 2, 1, 3)
-        output = output.flatten(2)
+        xq, xk = self.apply_rotary_emb(xq, xk, freqs_cis=freqs_cis)  # (bsz, seqlen, n_heads, d_head)
+        xq, xk = xq.to(dtype), xk.to(dtype)  # (bsz, seqlen, n_heads, d_head)
 
-        return self.wo(output)
+        xq = xq.permute(0, 2, 1, 3)  # (bsz, n_heads, seqlen, d_head)
+        xk = xk.permute(0, 2, 1, 3)  # (bsz, n_heads, seqlen, d_head)
+        xv = xv.permute(0, 2, 1, 3)  # (bsz, n_heads, seqlen, d_head)
+        
+        scale = 1 / math.sqrt(xq.size(-1))  # scaler
+        scores = xq @ xk.transpose(-2, -1) * scale  # (bsz, n_heads, seqlen, seqlen)
+        scores += torch.zeros(xq.size(-2), xk.size(-2), dtype=dtype, device=xq.device)  # (bsz, n_heads, seqlen, seqlen)
+        attn_weights = F.softmax(scores, dim=-1)  # (bsz, n_heads, seqlen, seqlen)
+
+        output = attn_weights @ xv  # (bsz, n_heads, seqlen, d_head)
+        output = output.permute(0, 2, 1, 3)  # (bsz, seqlen, n_heads, d_head)
+        output = output.flatten(2)  # (bsz, seqlen, d_model)
+
+        return self.wo(output)  # (bsz, seqlen, d_model)
 
 
 class FeedForward(nn.Module):
