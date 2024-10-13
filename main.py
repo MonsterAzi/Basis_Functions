@@ -187,7 +187,7 @@ def main(CIFAR: bool = False, model_type: str = ""):
         epochs = 5,
         learning_rate = 1e-3,
         initial_batch_size = 16,
-        max_batch_size = 288,
+        max_batch_size = 256,
         beta_1 = 0.95,
         beta_2 = 0.95,
         shampoo_beta = 0.95,

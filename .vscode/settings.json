@@ -7,6 +7,8 @@
         "ndim",
         "nhwpqc",
         "seqlen",
+        "subln",
+        "triu",
         "uncond"
     ]
 }
