@@ -72,39 +72,29 @@ class LabelEmbedder(nn.Module):
         return embeddings
 
 
-def lambda_init_fn(depth):
-    return 0.8 - 0.6 * math.exp(-0.3 * depth)
-
 class Attention(nn.Module):
-    def __init__(self, dim, n_heads, depth):
+    def __init__(self, dim, n_heads):
         super().__init__()
 
         self.n_heads = n_heads
-        self.n_rep = 1
-        self.head_dim = dim // n_heads // 2
+        self.head_dim = dim // n_heads
+        self.max_relative_position = 128  # Hyperparameter, adjust as needed
 
-        self.wq = nn.Linear(dim, 2 * self.n_heads * self.head_dim, bias=False)
-        self.wk = nn.Linear(dim, 2 * self.n_heads * self.head_dim, bias=False)
-        self.wv = nn.Linear(dim, 2 * self.n_heads * self.head_dim, bias=False)
-        self.wo = nn.Linear(2 * self.n_heads * self.head_dim, dim, bias=False)
+        self.wq = nn.Linear(dim, n_heads * self.head_dim, bias=False)
+        self.wk = nn.Linear(dim, n_heads * self.head_dim, bias=False)
+        self.wv = nn.Linear(dim, n_heads * self.head_dim, bias=False)
+        self.wo = nn.Linear(n_heads * self.head_dim, dim, bias=False)
 
-        self.lambda_init = lambda_init_fn(depth)
-        self.lambda_q1 = nn.Parameter(torch.zeros(self.head_dim, dtype=torch.float32).normal_(mean=0,std=0.1))
-        self.lambda_k1 = nn.Parameter(torch.zeros(self.head_dim, dtype=torch.float32).normal_(mean=0,std=0.1))
-        self.lambda_q2 = nn.Parameter(torch.zeros(self.head_dim, dtype=torch.float32).normal_(mean=0,std=0.1))
-        self.lambda_k2 = nn.Parameter(torch.zeros(self.head_dim, dtype=torch.float32).normal_(mean=0,std=0.1))
-        
-        self.q_norm = nn.RMSNorm(2 * self.n_heads * self.head_dim)
-        self.k_norm = nn.RMSNorm(2 * self.n_heads * self.head_dim)
-        
-        self.subln = nn.RMSNorm(2 * self.head_dim, eps=1e-5, elementwise_affine=False)
+        self.relative_bias = nn.Parameter(torch.zeros(n_heads, 2 * self.max_relative_position - 1))
+
+        self.q_norm = nn.LayerNorm(n_heads * self.head_dim)
+        self.k_norm = nn.LayerNorm(n_heads * self.head_dim)
 
     @staticmethod
     def reshape_for_broadcast(freqs_cis, x):
         ndim = x.ndim
         assert 0 <= 1 < ndim
-        # Reshape freqs_cis to match the last two dimensions of x
-        _freqs_cis = freqs_cis[: x.shape[1], : x.shape[-1]]
+        _freqs_cis = freqs_cis[: x.shape[1]]
         shape = [1] * ndim
         shape[1] = x.shape[1]
         shape[-1] = x.shape[-1]
@@ -121,49 +111,50 @@ class Attention(nn.Module):
         xk_out = torch.view_as_real(xk_ * freqs_cis_xk).flatten(3)
         return xq_out, xk_out
 
+    def _compute_relative_position_bucket(self, seqlen):
+        context_position = torch.arange(seqlen, dtype=torch.long, device=self.relative_bias.device)[:, None]
+        memory_position = torch.arange(seqlen, dtype=torch.long, device=self.relative_bias.device)[None, :]
+        relative_position = memory_position - context_position  # (seqlen, seqlen)
+        relative_position = relative_position.clamp(-self.max_relative_position + 1, self.max_relative_position - 1)
+        relative_position_bucket = relative_position + self.max_relative_position - 1  # shift to positive
+        return relative_position_bucket  # (seqlen, seqlen)
+
     def forward(self, x, freqs_cis):
-        bsz, seqlen, _ = x.shape  # (bsz, seqlen, ...)
-        
-        xq = self.wq(x)  # (bsz, seqlen, d_model)
-        xk = self.wk(x)  # (bsz, seqlen, d_model)
-        xv = self.wv(x)  # (bsz, seqlen, d_model)
-        
+        bsz, seqlen, _ = x.shape
+
+        xq = self.wq(x)
+        xk = self.wk(x)
+        xv = self.wv(x)
+
         xq = self.q_norm(xq)
         xk = self.k_norm(xk)
-        
-        xq = xq.view(bsz, seqlen, 2 * self.n_heads, self.head_dim)  # (bsz, seqlen, 2 * n_heads, d_head // 2)
-        xk = xk.view(bsz, seqlen, 2 * self.n_heads, self.head_dim)  # (bsz, seqlen, 2 * n_heads, d_head // 2)
-        xv = xv.view(bsz, seqlen, self.n_heads, 2 * self.head_dim)  # (bsz, seqlen, n_heads, d_head)
 
-        xq, xk = self.apply_rotary_emb(xq, xk, freqs_cis=freqs_cis)  # (bsz, seqlen, 2 * n_heads, d_head // 2)
+        xq = xq.view(bsz, seqlen, self.n_heads, self.head_dim)
+        xk = xk.view(bsz, seqlen, self.n_heads, self.head_dim)
+        xv = xv.view(bsz, seqlen, self.n_heads, self.head_dim)
 
-        xq = xq.permute(0, 2, 1, 3)  # (bsz, 2 * n_heads, seqlen, d_head // 2)
-        xk = xk.permute(0, 2, 1, 3)  # (bsz, 2 * n_heads, seqlen, d_head // 2)
-        xv = xv.permute(0, 2, 1, 3)  # (bsz, n_heads, seqlen, d_head)
-        
-        q1, q2 = xq.chunk(2, dim=1)  # (bsz, n_heads, seqlen, d_head // 2)
-        k1, k2 = xk.chunk(2, dim=1)  # (bsz, n_heads, seqlen, d_head // 2)
-        
-        scale = 1 / math.sqrt(xq.size(-1))  # scaler
-        bias = torch.zeros(seqlen, seqlen, device=xq.device)  # (seqlen, seqlen)
-        scores_1 = q1 @ k1.transpose(-2, -1) * scale  # (bsz, n_heads, seqlen, seqlen)
-        scores_1 += bias
-        scores_2 = q2 @ k2.transpose(-2, -1) * scale  # (bsz, n_heads, seqlen, seqlen)
-        scores_2 += bias
-        
-        lambda_1 = torch.exp(torch.sum(self.lambda_q1 * self.lambda_k1, dim=-1).float()).type_as(x)
-        lambda_2 = torch.exp(torch.sum(self.lambda_q2 * self.lambda_k2, dim=-1).float()).type_as(x)
-        lambda_full = lambda_1 - lambda_2 + self.lambda_init # scalar
-        
-        attn_weights = F.softmax(scores_1, dim=-1).type_as(x) - lambda_full * F.softmax(scores_2, dim=-1).type_as(x)  # (bsz, n_heads, seqlen, seqlen)
+        xq, xk = self.apply_rotary_emb(xq, xk, freqs_cis=freqs_cis)
 
-        output = attn_weights @ xv  # (bsz, n_heads, seqlen, d_head)
-        output = self.subln(output)
-        output *= (1 - self.lambda_init)
-        output = output.permute(0, 2, 1, 3)  # (bsz, seqlen, n_heads, d_head)
-        output = output.flatten(2)  # (bsz, seqlen, d_model)
+        xq = xq.permute(0, 2, 1, 3)  # (bsz, n_heads, seqlen, head_dim)
+        xk = xk.permute(0, 2, 1, 3)
+        xv = xv.permute(0, 2, 1, 3)
 
-        return self.wo(output)  # (bsz, seqlen, d_model)
+        scale = 1 / math.sqrt(self.head_dim)
+        scores = torch.matmul(xq, xk.transpose(-2, -1)) * scale  # (bsz, n_heads, seqlen, seqlen)
+
+        # Add relative positional bias
+        relative_position_bucket = self._compute_relative_position_bucket(seqlen)  # (seqlen, seqlen)
+        relative_bias = self.relative_bias[:, relative_position_bucket]  # (n_heads, seqlen, seqlen)
+        scores = scores + relative_bias.unsqueeze(0)  # (bsz, n_heads, seqlen, seqlen)
+
+        attn_weights = F.softmax(scores, dim=-1)
+
+        output = torch.matmul(attn_weights, xv)
+
+        output = output.permute(0, 2, 1, 3).contiguous()
+        output = output.view(bsz, seqlen, -1)
+
+        return self.wo(output)
 
 
 class FeedForward(nn.Module):
@@ -198,7 +189,7 @@ class TransformerBlock(nn.Module):
         super().__init__()
         self.dim = dim
         self.head_dim = dim // n_heads
-        self.attention = Attention(dim, n_heads, layer_id)
+        self.attention = Attention(dim, n_heads)
         self.feed_forward = FeedForward(
             dim=dim,
             hidden_dim=4 * dim,
