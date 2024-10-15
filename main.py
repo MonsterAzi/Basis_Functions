@@ -242,6 +242,7 @@ def main(CIFAR: bool = False, model_type: str = ""):
 
         rf.model.eval()
         with torch.no_grad():
+            torch.autograd.set_detect_anomaly(True)
             cond = torch.arange(0, 16).cuda() % 10
             uncond = torch.ones_like(cond) * 10
 

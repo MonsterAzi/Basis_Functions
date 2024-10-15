@@ -72,89 +72,66 @@ class LabelEmbedder(nn.Module):
         return embeddings
 
 
-class Attention(nn.Module):
+class TTT_Layer(nn.Module):
     def __init__(self, dim, n_heads):
         super().__init__()
 
         self.n_heads = n_heads
         self.head_dim = dim // n_heads
-        self.max_relative_position = 128  # Hyperparameter, adjust as needed
-
-        self.wq = nn.Linear(dim, n_heads * self.head_dim, bias=False)
-        self.wk = nn.Linear(dim, n_heads * self.head_dim, bias=False)
-        self.wv = nn.Linear(dim, n_heads * self.head_dim, bias=False)
-        self.wo = nn.Linear(n_heads * self.head_dim, dim, bias=False)
-
-        self.relative_bias = nn.Parameter(torch.zeros(n_heads, 2 * self.max_relative_position - 1))
-
-        self.q_norm = nn.LayerNorm(n_heads * self.head_dim)
-        self.k_norm = nn.LayerNorm(n_heads * self.head_dim)
-
-    @staticmethod
-    def reshape_for_broadcast(freqs_cis, x):
-        ndim = x.ndim
-        assert 0 <= 1 < ndim
-        _freqs_cis = freqs_cis[: x.shape[1]]
-        shape = [1] * ndim
-        shape[1] = x.shape[1]
-        shape[-1] = x.shape[-1]
-        return _freqs_cis.view(*shape)
-
-    @staticmethod
-    def apply_rotary_emb(xq, xk, freqs_cis):
-        xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))
-        xk_ = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], -1, 2))
-        freqs_cis_xq = Attention.reshape_for_broadcast(freqs_cis, xq_)
-        freqs_cis_xk = Attention.reshape_for_broadcast(freqs_cis, xk_)
-
-        xq_out = torch.view_as_real(xq_ * freqs_cis_xq).flatten(3)
-        xk_out = torch.view_as_real(xk_ * freqs_cis_xk).flatten(3)
-        return xq_out, xk_out
-
-    def _compute_relative_position_bucket(self, seqlen):
-        context_position = torch.arange(seqlen, dtype=torch.long, device=self.relative_bias.device)[:, None]
-        memory_position = torch.arange(seqlen, dtype=torch.long, device=self.relative_bias.device)[None, :]
-        relative_position = memory_position - context_position  # (seqlen, seqlen)
-        relative_position = relative_position.clamp(-self.max_relative_position + 1, self.max_relative_position - 1)
-        relative_position_bucket = relative_position + self.max_relative_position - 1  # shift to positive
-        return relative_position_bucket  # (seqlen, seqlen)
-
-    def forward(self, x, freqs_cis):
+        self.task = Task(self.head_dim)
+    
+    def forward(self, x):
         bsz, seqlen, _ = x.shape
+        
+        x = x.view(bsz, seqlen, self.n_heads, self.head_dim)
 
-        xq = self.wq(x)
-        xk = self.wk(x)
-        xv = self.wv(x)
+        # Initialize learner for each head
+        learners = [Learner(self.task, x.device) for _ in range(self.n_heads)]
 
-        xq = self.q_norm(xq)
-        xk = self.k_norm(xk)
+        output = []
+        for t in range(seqlen):
+            # Train and predict with each learner head
+            head_outputs = []
+            for head in range(self.n_heads):
+                # Debug print statement
+                learners[head].train(x[:, t, head, :])
+                head_outputs.append(learners[head].predict(x[:, t, head, :]))
 
-        xq = xq.view(bsz, seqlen, self.n_heads, self.head_dim)
-        xk = xk.view(bsz, seqlen, self.n_heads, self.head_dim)
-        xv = xv.view(bsz, seqlen, self.n_heads, self.head_dim)
+            output.append(torch.stack(head_outputs, dim=1))  # Stack head outputs
 
-        xq, xk = self.apply_rotary_emb(xq, xk, freqs_cis=freqs_cis)
+        output = torch.stack(output, dim=1)  # Stack outputs over timesteps
+        output = output.flatten(2)
 
-        xq = xq.permute(0, 2, 1, 3)  # (bsz, n_heads, seqlen, head_dim)
-        xk = xk.permute(0, 2, 1, 3)
-        xv = xv.permute(0, 2, 1, 3)
+        return output
 
-        scale = 1 / math.sqrt(self.head_dim)
-        scores = torch.matmul(xq, xk.transpose(-2, -1)) * scale  # (bsz, n_heads, seqlen, seqlen)
+class Task(nn.Module):
+    def __init__(self, head_dim):
+        super().__init__()
+        self.theta_K = nn.Parameter(torch.randn(head_dim, head_dim))
+        self.theta_V = nn.Parameter(torch.randn(head_dim, head_dim))
+        self.theta_Q = nn.Parameter(torch.randn(head_dim, head_dim))
 
-        # Add relative positional bias
-        relative_position_bucket = self._compute_relative_position_bucket(seqlen)  # (seqlen, seqlen)
-        relative_bias = self.relative_bias[:, relative_position_bucket]  # (n_heads, seqlen, seqlen)
-        scores = scores + relative_bias.unsqueeze(0)  # (bsz, n_heads, seqlen, seqlen)
+    def loss(self, f, x):
+        train_view = self.theta_K @ x.t()
+        label_view = self.theta_V @ x.t()
+        return F.mse_loss(f(train_view.t()), label_view.t())
 
-        attn_weights = F.softmax(scores, dim=-1)
+class Learner():
+    def __init__(self, task, device):
+        self.task = task
+        self.model = nn.Linear(self.task.theta_K.shape[0], self.task.theta_V.shape[1]).to(device)  # Linear model
+        self.optim = torch.optim.SGD(self.model.parameters(), lr=0.03)  # Online GD
 
-        output = torch.matmul(attn_weights, xv)
+    def train(self, x):
+        # print(f"x shape in train: {x.shape}")
+        self.optim.zero_grad()
+        loss = self.task.loss(self.model, x)
+        loss.backward(retain_graph=True)
+        self.optim.step()
 
-        output = output.permute(0, 2, 1, 3).contiguous()
-        output = output.view(bsz, seqlen, -1)
-
-        return self.wo(output)
+    def predict(self, x):
+        test_view = self.task.theta_Q @ x.t()
+        return self.model(test_view.t())
 
 
 class FeedForward(nn.Module):
@@ -189,7 +166,7 @@ class TransformerBlock(nn.Module):
         super().__init__()
         self.dim = dim
         self.head_dim = dim // n_heads
-        self.attention = Attention(dim, n_heads)
+        self.attention = TTT_Layer(dim, n_heads)
         self.feed_forward = FeedForward(
             dim=dim,
             hidden_dim=4 * dim,
@@ -205,20 +182,20 @@ class TransformerBlock(nn.Module):
             nn.Linear(min(dim, 1024), 6 * dim, bias=True),
         )
 
-    def forward(self, x, freqs_cis, adaln_input=None):
+    def forward(self, x, adaln_input=None):
         if adaln_input is not None:
             shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = (
                 self.adaLN_modulation(adaln_input).chunk(6, dim=1)
             )
 
             x = x + gate_msa.unsqueeze(1) * self.attention(
-                modulate(self.attention_norm(x), shift_msa, scale_msa), freqs_cis
+                modulate(self.attention_norm(x), shift_msa, scale_msa)
             )
             x = x + gate_mlp.unsqueeze(1) * self.feed_forward(
                 modulate(self.ffn_norm(x), shift_mlp, scale_mlp)
             )
         else:
-            x = x + self.attention(self.attention_norm(x), freqs_cis)
+            x = x + self.attention(self.attention_norm(x))
             x = x + self.feed_forward(self.ffn_norm(x))
 
         return x
@@ -298,8 +275,6 @@ class DiT_Llama(nn.Module):
         )
         self.final_layer = FinalLayer(dim, patch_size, self.out_channels)
 
-        self.freqs_cis = self.precompute_freqs_cis(dim // n_heads, 4096)
-
     def unpatchify(self, x):
         c = self.out_channels
         p = self.patch_size
@@ -323,7 +298,6 @@ class DiT_Llama(nn.Module):
         return x
 
     def forward(self, x, t, y, return_feature=None):
-        self.freqs_cis = self.freqs_cis.to(x.device)
 
         x = self.init_conv_seq(x)
 
@@ -335,7 +309,7 @@ class DiT_Llama(nn.Module):
         adaln_input = t.to(x.dtype) + y.to(x.dtype)
 
         for i, layer in enumerate(self.layers):
-            x = layer(x, self.freqs_cis[: x.size(1)], adaln_input=adaln_input)
+            x = layer(x, adaln_input=adaln_input)
             if return_feature == i:
                 return x
                 
@@ -355,14 +329,6 @@ class DiT_Llama(nn.Module):
         eps = torch.cat([half_eps, half_eps], dim=0)
         return torch.cat([eps, rest], dim=1)
 
-    @staticmethod
-    def precompute_freqs_cis(dim, end, theta=10000.0):
-        freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
-        t = torch.arange(end)
-        freqs = torch.outer(t, freqs).float()
-        freqs_cis = torch.polar(torch.ones_like(freqs), freqs)
-        return freqs_cis
-
 
 def DiT_Llama_600M_patch2(**kwargs):
     return DiT_Llama(patch_size=2, dim=256, n_layers=16, n_heads=32, **kwargs)
@@ -379,8 +345,7 @@ if __name__ == "__main__":
     t = torch.randint(0, 100, (2,))
     y = torch.randint(0, 10, (2,))
 
-    with torch.no_grad():
-        out = model(x, t, y)
-        print(out.shape)
-        out = model.forward_with_cfg(x, t, y, 0.5)
-        print(out.shape)
+    out = model(x, t, y)
+    print(out.shape)
+    out = model.forward_with_cfg(x, t, y, 0.5)
+    print(out.shape)
