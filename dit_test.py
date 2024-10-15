@@ -72,66 +72,85 @@ class LabelEmbedder(nn.Module):
         return embeddings
 
 
-class TTT_Layer(nn.Module):
+class Attention(nn.Module):
     def __init__(self, dim, n_heads):
         super().__init__()
-
         self.n_heads = n_heads
+        self.n_rep = 1
         self.head_dim = dim // n_heads
-        self.task = Task(self.head_dim)
-    
-    def forward(self, x):
-        bsz, seqlen, _ = x.shape
+
+        self.wq = nn.Linear(dim, n_heads * self.head_dim, bias=False)
+        self.wk = nn.Linear(dim, self.n_heads * self.head_dim, bias=False)
+        self.wv = nn.Linear(dim, self.n_heads * self.head_dim, bias=False)
+        self.wo = nn.Linear(n_heads * self.head_dim, dim, bias=False)
+
+        self.wg = nn.Linear(dim, n_heads * self.head_dim, bias=False)
         
-        x = x.view(bsz, seqlen, self.n_heads, self.head_dim)
+        self.q_norm = nn.RMSNorm(self.n_heads * self.head_dim)
+        self.k_norm = nn.RMSNorm(self.n_heads * self.head_dim)
+        
+        self.scale = nn.Parameter(torch.ones(n_heads, 1, 1))
 
-        # Initialize learner for each head
-        learners = [Learner(self.task, x.device) for _ in range(self.n_heads)]
+    @staticmethod
+    def reshape_for_broadcast(freqs_cis, x):
+        ndim = x.ndim
+        assert 0 <= 1 < ndim
+        _freqs_cis = freqs_cis[: x.shape[1]]
+        shape = [d if i == 1 or i == ndim - 1 else 1 for i, d in enumerate(x.shape)]
+        return _freqs_cis.view(*shape)
 
-        output = []
-        for t in range(seqlen):
-            # Train and predict with each learner head
-            head_outputs = []
-            for head in range(self.n_heads):
-                # Debug print statement
-                learners[head].train(x[:, t, head, :])
-                head_outputs.append(learners[head].predict(x[:, t, head, :]))
+    @staticmethod
+    def apply_rotary_emb(xq, xk, freqs_cis):
+        xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))
+        xk_ = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], -1, 2))
+        freqs_cis_xq = Attention.reshape_for_broadcast(freqs_cis, xq_)
+        freqs_cis_xk = Attention.reshape_for_broadcast(freqs_cis, xk_)
 
-            output.append(torch.stack(head_outputs, dim=1))  # Stack head outputs
+        xq_out = torch.view_as_real(xq_ * freqs_cis_xq).flatten(3)
+        xk_out = torch.view_as_real(xk_ * freqs_cis_xk).flatten(3)
+        return xq_out, xk_out
 
-        output = torch.stack(output, dim=1)  # Stack outputs over timesteps
+    def forward(self, x, freqs_cis):
+        bsz, seqlen, _ = x.shape
+
+        xq = self.wq(x)
+        xk = self.wk(x)
+        xv = self.wv(x)
+        xg = self.wg(x)
+
+        dtype = xq.dtype
+
+        xq = self.q_norm(xq)
+        xk = self.k_norm(xk)
+
+        xq = xq.view(bsz, seqlen, self.n_heads, self.head_dim)
+        xk = xk.view(bsz, seqlen, self.n_heads, self.head_dim)
+        xv = xv.view(bsz, seqlen, self.n_heads, self.head_dim)
+        xg = xg.view(bsz, seqlen, self.n_heads, self.head_dim)
+
+        xq, xk = self.apply_rotary_emb(xq, xk, freqs_cis=freqs_cis)
+        xq, xk = xq.to(dtype), xk.to(dtype)
+
+        xq = xq.permute(0, 2, 1, 3)
+        xk = xk.permute(0, 2, 1, 3)
+        xv = xv.permute(0, 2, 1, 3)
+        xg = xg.permute(0, 2, 1, 3)
+        
+        scale = 1 / math.sqrt(xq.size(-1))
+        scores = xq @ xk.transpose(-2, -1) * scale
+        scores += torch.zeros(xq.size(-2), xk.size(-2), dtype=dtype, device=xq.device)
+        attn_weights = F.softmax(scores, dim=-1)
+
+        output = attn_weights @ xv
+        
+        # Gating mechanism
+        gate = torch.sigmoid(xg)
+        output = gate * output * self.scale
+        
+        output = output.permute(0, 2, 1, 3)
         output = output.flatten(2)
 
-        return output
-
-class Task(nn.Module):
-    def __init__(self, head_dim):
-        super().__init__()
-        self.theta_K = nn.Parameter(torch.randn(head_dim, head_dim))
-        self.theta_V = nn.Parameter(torch.randn(head_dim, head_dim))
-        self.theta_Q = nn.Parameter(torch.randn(head_dim, head_dim))
-
-    def loss(self, f, x):
-        train_view = self.theta_K @ x.t()
-        label_view = self.theta_V @ x.t()
-        return F.mse_loss(f(train_view.t()), label_view.t())
-
-class Learner():
-    def __init__(self, task, device):
-        self.task = task
-        self.model = nn.Linear(self.task.theta_K.shape[0], self.task.theta_V.shape[1]).to(device)  # Linear model
-        self.optim = torch.optim.SGD(self.model.parameters(), lr=0.03)  # Online GD
-
-    def train(self, x):
-        # print(f"x shape in train: {x.shape}")
-        self.optim.zero_grad()
-        loss = self.task.loss(self.model, x)
-        loss.backward(retain_graph=True)
-        self.optim.step()
-
-    def predict(self, x):
-        test_view = self.task.theta_Q @ x.t()
-        return self.model(test_view.t())
+        return self.wo(output)
 
 
 class FeedForward(nn.Module):
@@ -166,7 +185,7 @@ class TransformerBlock(nn.Module):
         super().__init__()
         self.dim = dim
         self.head_dim = dim // n_heads
-        self.attention = TTT_Layer(dim, n_heads)
+        self.attention = Attention(dim, n_heads)
         self.feed_forward = FeedForward(
             dim=dim,
             hidden_dim=4 * dim,
@@ -182,20 +201,20 @@ class TransformerBlock(nn.Module):
             nn.Linear(min(dim, 1024), 6 * dim, bias=True),
         )
 
-    def forward(self, x, adaln_input=None):
+    def forward(self, x, freqs_cis, adaln_input=None):
         if adaln_input is not None:
             shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = (
                 self.adaLN_modulation(adaln_input).chunk(6, dim=1)
             )
 
             x = x + gate_msa.unsqueeze(1) * self.attention(
-                modulate(self.attention_norm(x), shift_msa, scale_msa)
+                modulate(self.attention_norm(x), shift_msa, scale_msa), freqs_cis
             )
             x = x + gate_mlp.unsqueeze(1) * self.feed_forward(
                 modulate(self.ffn_norm(x), shift_mlp, scale_mlp)
             )
         else:
-            x = x + self.attention(self.attention_norm(x))
+            x = x + self.attention(self.attention_norm(x), freqs_cis)
             x = x + self.feed_forward(self.ffn_norm(x))
 
         return x
@@ -275,6 +294,8 @@ class DiT_Llama(nn.Module):
         )
         self.final_layer = FinalLayer(dim, patch_size, self.out_channels)
 
+        self.freqs_cis = self.precompute_freqs_cis(dim // n_heads, 4096)
+
     def unpatchify(self, x):
         c = self.out_channels
         p = self.patch_size
@@ -298,6 +319,7 @@ class DiT_Llama(nn.Module):
         return x
 
     def forward(self, x, t, y, return_feature=None):
+        self.freqs_cis = self.freqs_cis.to(x.device)
 
         x = self.init_conv_seq(x)
 
@@ -309,7 +331,7 @@ class DiT_Llama(nn.Module):
         adaln_input = t.to(x.dtype) + y.to(x.dtype)
 
         for i, layer in enumerate(self.layers):
-            x = layer(x, adaln_input=adaln_input)
+            x = layer(x, self.freqs_cis[: x.size(1)], adaln_input=adaln_input)
             if return_feature == i:
                 return x
                 
@@ -328,6 +350,14 @@ class DiT_Llama(nn.Module):
         half_eps = uncond_eps + cfg_scale * (cond_eps - uncond_eps)
         eps = torch.cat([half_eps, half_eps], dim=0)
         return torch.cat([eps, rest], dim=1)
+
+    @staticmethod
+    def precompute_freqs_cis(dim, end, theta=10000.0):
+        freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
+        t = torch.arange(end)
+        freqs = torch.outer(t, freqs).float()
+        freqs_cis = torch.polar(torch.ones_like(freqs), freqs)
+        return freqs_cis
 
 
 def DiT_Llama_600M_patch2(**kwargs):
