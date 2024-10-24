@@ -7,6 +7,86 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from typing import Tuple
+
+class ModelState:
+    def __init__(self):
+        self.seq_pos = 0
+        self.input_tokens_cache = torch.tensor([])
+        self.k_cache = torch.tensor([])
+        self.block_states:list[BlockState] = []
+
+class TimeMixState:
+    def __init__(self, wkv_state=torch.tensor([]), shift_state=torch.tensor([])):
+        self.wkv_state = wkv_state
+        self.shift_state = shift_state
+
+class ChannelMixState:
+    def __init__(self, shift_state=torch.tensor([])):
+        self.shift_state = shift_state
+
+class BlockState:
+    def __init__(self, time_mix_state: TimeMixState, channel_mix_state: ChannelMixState):
+        self.time_mix_state = time_mix_state
+        self.channel_mix_state = channel_mix_state
+
+class Shared:
+    def __init__(self):
+        self.angles = torch.tensor([])
+        self.bias_mask = torch.tensor([])
+
+
+def generate_rotary_embedding(max_seqlen:int, dim:int, theta:float = 10000.0, scale:float = 1):
+    angular_velocity = theta ** -(torch.arange(0, dim, 2, dtype=torch.float) / dim) / scale # frequencies from 1.0 ... 1/theta
+    angles = torch.outer(torch.arange(max_seqlen), angular_velocity)
+    return torch.polar(torch.ones_like(angles), angles)
+
+def generate_binary_rotary_embedding(max_seqlen:int, dim:int, scale:float=1):
+    arange = torch.arange(dim // 2)
+    angular_velocity = math.pi * (2.0 ** -arange) / scale # fastest velocity will rotate fully in two steps
+    angular_velocity[int(math.log2(max_seqlen)):] = 0.0 # don't supply velocities slower than the one that will get a single full rotation across the seqlen
+    #angular_velocity[20:] = 0.0 # don't supply velocities slower than the one that will get a single full rotation across 1024k ctxlen
+    angles = torch.outer(torch.arange(max_seqlen), angular_velocity)
+    return torch.polar(torch.ones_like(angles), angles)
+
+def apply_rotary_embedding(q, k, angles, seq_dim:int = -2) -> Tuple[torch.Tensor, torch.Tensor]:
+    if angles.size(0) == 0:
+        return q, k
+    
+    q_dtype, k_dtype = q.dtype, k.dtype
+    L = q.size(seq_dim)
+    q_angles = angles[-L:].view(1, 1, L, angles.size(1))
+    if q.ndim == 3:
+        q = torch.view_as_complex(q.float().reshape(q.size(0), q.size(1), -1, 2)) * q_angles
+    else:
+        q = torch.view_as_complex(q.float().reshape(q.size(0), q.size(1), q.size(2), -1, 2)) * q_angles
+
+    L = k.size(seq_dim)
+    k_angles = angles[-L:].view(1, 1, L, angles.size(1))
+    if k.ndim == 3:
+        k = torch.view_as_complex(k.float().reshape(k.size(0), k.size(1), -1, 2)) * k_angles
+    else:
+        k = torch.view_as_complex(k.float().reshape(k.size(0), k.size(1), k.size(2), -1, 2)) * k_angles
+
+    return torch.view_as_real(q).flatten(3).to(q_dtype), torch.view_as_real(k).flatten(3).to(k_dtype)
+
+class RotaryEmbedding(nn.Module):
+    def __init__(self, max_sequence_length:int, dim:int, seq_dim:int = -2, theta:float = 10000):
+        super().__init__()
+        self.angles = generate_rotary_embedding(max_sequence_length, dim, theta)
+        self.seq_dim = seq_dim
+
+    def forward(self, q, k):
+        return apply_rotary_embedding(q, k, self.angles, self.seq_dim)
+
+
+def get_default_state(x:torch.Tensor, requires_grad:bool):
+    B, T, C = x.size()
+    return TimeMixState(
+        torch.zeros([2, B, 0, C], dtype=x.dtype, device=x.device, requires_grad=requires_grad), 
+        torch.tensor([]),
+    )
+
 
 def modulate(x, shift, scale):
     return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
@@ -72,116 +152,59 @@ class LabelEmbedder(nn.Module):
         return embeddings
 
 
-class Attention(nn.Module):
-    def __init__(self, dim, n_heads, n_resolutions=3, dropout=0.0):
+class CMix_llama(nn.Module):
+    def __init__(self, dim):
         super().__init__()
+        self.dim_ffn = dim * 4 * 2 // 3 // 32 * 32
 
+        self.w1 = nn.Linear(dim, self.dim_ffn, bias=False)
+        self.w2 = nn.Linear(self.dim_ffn, dim, bias=False)
+        self.w3 = nn.Linear(dim, self.dim_ffn, bias=False)
+
+    def forward(self, x, last_state:ChannelMixState):
+        return self.w2(F.silu(self.w1(x)) * self.w3(x)), last_state
+
+
+class TMix_llama(nn.Module):
+    def get_default_state_factory(self): return get_default_state
+
+    def __init__(self, dim, n_heads):
+        super().__init__()
         self.n_heads = n_heads
-        self.n_resolutions = n_resolutions
-        self.head_dim = dim // n_heads
-        self.dropout = dropout
+        self.head_size = dim // n_heads
+        assert dim % self.n_heads == 0
 
-        # Original Query Linear Transformation (Remains Unchanged)
-        self.wq = nn.Linear(dim, n_heads * self.head_dim, bias=False)
-        
-        # Multi-Resolution Key/Value Encoding
-        self.wk_multi_res = nn.ModuleList([nn.Linear(dim, self.n_heads * self.head_dim, bias=False) for _ in range(n_resolutions)])
-        self.wv_multi_res = nn.ModuleList([nn.Linear(dim, self.n_heads * self.head_dim, bias=False) for _ in range(n_resolutions)])
+        self.wq = nn.Linear(dim, self.n_heads * self.head_size, bias=False)
+        self.wk = nn.Linear(dim, self.n_heads * self.head_size, bias=False)
+        self.wv = nn.Linear(dim, self.n_heads * self.head_size, bias=False)
+        self.wo = nn.Linear(self.n_heads * self.head_size, dim, bias=False)
 
-        # Adaptive Mixture Weights
-        self.w_mixture = nn.Linear(dim, n_resolutions, bias=False)
-        self.softmax = nn.Softmax(dim=-1)
+    def forward(self, x, xo, kv_cache, last_state:TimeMixState, shared:Shared):
+        B, L, D = x.size()
+        H = self.n_heads
 
-        # Output Linear Transformation
-        self.wo = nn.Linear(n_heads * self.head_dim, dim, bias=False)
+        q = self.wq(x) 
+        k = self.wk(x)
+        v = self.wv(x)
+        wkv_state = last_state.wkv_state
 
-        # Normalization Layers
-        self.q_norm = nn.LayerNorm(n_heads * self.head_dim)
-        self.k_norms = nn.ModuleList([nn.LayerNorm(n_heads * self.head_dim) for _ in range(n_resolutions)])
+        # handle recurrent inference via maintaining a kv cache
+        if not self.training:
+            new_kv_cache = torch.stack([k, v], dim=0)
+            wkv_state = torch.cat([wkv_state, new_kv_cache], dim=-2)
+            k, v = wkv_state.unbind(0)
+            k, v = k.contiguous(), v.contiguous()
 
-    @staticmethod
-    def reshape_for_broadcast(freqs_cis, x):
-        # Reused from the original code with no modifications
-        ndim = x.ndim
-        assert 0 <= 1 < ndim
-        _freqs_cis = freqs_cis[: x.shape[1]]
-        shape = [d if i == 1 or i == ndim - 1 else 1 for i, d in enumerate(x.shape)]
-        return _freqs_cis.view(*shape)
+        is_causal = q.size(1)==k.size(1)
 
-    @staticmethod
-    def apply_rotary_emb(xq, xk, freqs_cis):
-        # Reused from the original code with no modifications
-        xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))
-        xk_ = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], -1, 2))
-        freqs_cis_xq = Attention.reshape_for_broadcast(freqs_cis, xq_)
-        freqs_cis_xk = Attention.reshape_for_broadcast(freqs_cis, xk_)
-
-        xq_out = torch.view_as_real(xq_ * freqs_cis_xq).flatten(3)
-        xk_out = torch.view_as_real(xk_ * freqs_cis_xk).flatten(3)
-        return xq_out, xk_out
-
-    def forward(self, x, freqs_cis):
-        bsz, seqlen, _ = x.shape
-
-        # Original Query Transformation
-        xq = self.wq(x)
-        xq = self.q_norm(xq)
-        xq = xq.view(bsz, seqlen, self.n_heads, self.head_dim)
-
-        # Multi-Resolution Key/Value Encoding and Normalization
-        xk_multi_res = [self.k_norms[i](wk(x)) for i, wk in enumerate(self.wk_multi_res)]
-        xv_multi_res = [wv(x) for wv in self.wv_multi_res]
-        xk_multi_res = [k.view(bsz, seqlen, self.n_heads, self.head_dim) for k in xk_multi_res]
-        xv_multi_res = [v.view(bsz, seqlen, self.n_heads, self.head_dim) for v in xv_multi_res]
-
-        # Apply Rotary Embedding
-        xq_multi_res = [xq] * self.n_resolutions
-        xk_multi_res_emb = [self.apply_rotary_emb(xq, k, freqs_cis)[1] for xq, k in zip(xq_multi_res, xk_multi_res)]
-        xq_multi_res_emb = [self.apply_rotary_emb(xq, xq, freqs_cis)[0] for xq in xq_multi_res]
-
-        # Adaptive Mixture Weights
-        mixture_weights = self.softmax(self.w_mixture(x))  # [bsz, seqlen, n_resolutions]
-
-        # Compute Attention for Each Resolution and Mix
-        outputs = []
-        for i in range(self.n_resolutions):
-            output = F.scaled_dot_product_attention(
-                xq_multi_res_emb[i].permute(0, 2, 1, 3),
-                xk_multi_res_emb[i].permute(0, 2, 1, 3),
-                xv_multi_res[i].permute(0, 2, 1, 3),
-                dropout_p=self.dropout,
-                is_causal=False,
-            ).permute(0, 2, 1, 3)
-            output = output.flatten(-2)  # [bsz, seqlen, n_heads * head_dim]
-            outputs.append(output)
-
-        # Mix Outputs based on Learned Weights
-        outputs = [output * mixture_weights[..., i].unsqueeze(-1) for i, output in enumerate(outputs)]
-        mixed_output = torch.stack(outputs, dim=0).sum(dim=0)  # [bsz, seqlen, n_heads * head_dim]
-
-        # Final Linear Transformation
-        final_output = self.wo(mixed_output)
-
-        return final_output
-
-
-class FeedForward(nn.Module):
-    def __init__(self, dim, hidden_dim, multiple_of, ffn_dim_multiplier=None):
-        super().__init__()
-        hidden_dim = int(2 * hidden_dim / 3)
-        if ffn_dim_multiplier:
-            hidden_dim = int(ffn_dim_multiplier * hidden_dim)
-        hidden_dim = multiple_of * ((hidden_dim + multiple_of - 1) // multiple_of)
-
-        self.w1 = nn.Linear(dim, hidden_dim, bias=False)
-        self.w2 = nn.Linear(hidden_dim, dim, bias=False)
-        self.w3 = nn.Linear(dim, hidden_dim, bias=False)
-
-    def _forward_silu_gating(self, x1, x3):
-        return F.silu(x1) * x3
-
-    def forward(self, x):
-        return self.w2(self._forward_silu_gating(self.w1(x), self.w3(x)))
+        q = q.view(B,-1,H,D//H).transpose(1,2)
+        k = k.view(B,-1,H,D//H).transpose(1,2)
+        v = v.view(B,-1,H,D//H).transpose(1,2)
+        q, k = apply_rotary_embedding(q, k, shared.angles)
+        y = nn.functional.scaled_dot_product_attention(q, k, v, dropout_p=0.0, is_causal=is_causal)
+        y = y.transpose(1,2).reshape(B,L,D)
+        y = self.wo(y)
+        return y, TimeMixState(wkv_state, last_state.shift_state)
 
 
 class TransformerBlock(nn.Module):
@@ -190,46 +213,56 @@ class TransformerBlock(nn.Module):
         layer_id,
         dim,
         n_heads,
-        multiple_of,
-        ffn_dim_multiplier,
         norm_eps,
+        parallel,
     ):
         super().__init__()
         self.dim = dim
         self.head_dim = dim // n_heads
-        self.attention = Attention(dim, n_heads)
-        self.feed_forward = FeedForward(
-            dim=dim,
-            hidden_dim=4 * dim,
-            multiple_of=multiple_of,
-            ffn_dim_multiplier=ffn_dim_multiplier,
-        )
+        self.att = TMix_llama(dim, n_heads)
+        self.ffn = CMix_llama(dim)
         self.layer_id = layer_id
-        self.attention_norm = nn.LayerNorm(dim, eps=norm_eps)
-        self.ffn_norm = nn.LayerNorm(dim, eps=norm_eps)
+        self.attention_norm = nn.RMSNorm(dim, eps=norm_eps)
+        self.ffn_norm = nn.RMSNorm(dim, eps=norm_eps)
+        
+        self.parallel = parallel
 
         self.adaLN_modulation = nn.Sequential(
             nn.SiLU(),
             nn.Linear(min(dim, 1024), 6 * dim, bias=True),
         )
 
-    def forward(self, x, freqs_cis, adaln_input=None):
+    def forward(self, x, x_original_cache, kv_cache, last_model_state:ModelState, shared:Shared):
+        last_block_state:BlockState = last_model_state.block_states[self.layer_id]
+
         if adaln_input is not None:
             shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = (
                 self.adaLN_modulation(adaln_input).chunk(6, dim=1)
             )
-
-            x = x + gate_msa.unsqueeze(1) * self.attention(
-                modulate(self.attention_norm(x), shift_msa, scale_msa), freqs_cis
-            )
-            x = x + gate_mlp.unsqueeze(1) * self.feed_forward(
-                modulate(self.ffn_norm(x), shift_mlp, scale_mlp)
-            )
+            
+            if not self.parallel:
+                dx, time_mix_state = self.att(modulate(self.ln1(x), shift_msa, scale_msa), x_original_cache, kv_cache, last_block_state.time_mix_state, shared)
+                x += gate_msa.unsqueeze(1) * dx
+                dx, channel_mix_state = self.ffn(modulate(self.ln2(x), shift_mlp, scale_mlp), last_block_state.channel_mix_state)
+                x += gate_mlp.unsqueeze(1) * dx
+            else:
+                # parallel
+                dx_att, time_mix_state = self.att(modulate(self.ln1(x), shift_msa, scale_msa), x_original_cache, kv_cache, last_block_state.time_mix_state, shared)
+                dx_ffn, channel_mix_state = self.ffn(modulate(self.ln2(x), shift_mlp, scale_mlp), last_block_state.channel_mix_state)
+                x += gate_msa.unsqueeze(1) * dx_att + gate_mlp.unsqueeze(1) * dx_ffn
         else:
-            x = x + self.attention(self.attention_norm(x), freqs_cis)
-            x = x + self.feed_forward(self.ffn_norm(x))
+            if not self.parallel:
+                dx, time_mix_state = self.att(self.ln1(x), x_original_cache, kv_cache, last_block_state.time_mix_state, shared)
+                x += dx
+                dx, channel_mix_state = self.ffn(self.ln2(x), last_block_state.channel_mix_state)
+                x += dx
+            else:
+                # parallel
+                dx_att, time_mix_state = self.att(self.ln1(x), x_original_cache, kv_cache, last_block_state.time_mix_state, shared)
+                dx_ffn, channel_mix_state = self.ffn(self.ln2(x), last_block_state.channel_mix_state)
+                x += dx_att + dx_ffn
 
-        return x
+        return x, BlockState(time_mix_state, channel_mix_state)
 
 
 class FinalLayer(nn.Module):
@@ -263,11 +296,10 @@ class DiT_Llama(nn.Module):
         dim=512,
         n_layers=5,
         n_heads=16,
-        multiple_of=256,
-        ffn_dim_multiplier=None,
         norm_eps=1e-5,
         class_dropout_prob=0.1,
         num_classes=10,
+        parallel=True,
     ):
         super().__init__()
 
@@ -275,6 +307,8 @@ class DiT_Llama(nn.Module):
         self.out_channels = in_channels
         self.input_size = input_size
         self.patch_size = patch_size
+        
+        self.shared = Shared()
 
         self.init_conv_seq = nn.Sequential(
             nn.Conv2d(in_channels, dim // 2, kernel_size=5, padding=2, stride=1),
@@ -297,9 +331,8 @@ class DiT_Llama(nn.Module):
                     layer_id,
                     dim,
                     n_heads,
-                    multiple_of,
-                    ffn_dim_multiplier,
                     norm_eps,
+                    parallel,
                 )
                 for layer_id in range(n_layers)
             ]
@@ -344,6 +377,8 @@ class DiT_Llama(nn.Module):
 
         for i, layer in enumerate(self.layers):
             x = layer(x, self.freqs_cis[: x.size(1)], adaln_input=adaln_input)
+            if return_feature == i:
+                return x
                 
 
         x = self.final_layer(x, adaln_input)
@@ -385,8 +420,7 @@ if __name__ == "__main__":
     t = torch.randint(0, 100, (2,))
     y = torch.randint(0, 10, (2,))
 
-    with torch.no_grad():
-        out = model(x, t, y)
-        print(out.shape)
-        out = model.forward_with_cfg(x, t, y, 0.5)
-        print(out.shape)
+    out = model(x, t, y)
+    print(out.shape)
+    out = model.forward_with_cfg(x, t, y, 0.5)
+    print(out.shape)

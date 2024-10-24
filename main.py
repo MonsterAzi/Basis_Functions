@@ -124,12 +124,19 @@ class RF:
             images.append(z)
         return images
 
-def get_batch_size(epoch, initial_batch_size, max_batch_size, total_epochs):
-    # Using a linear schedule for batch size increase
+def get_batch_size(epoch, initial_batch_size, max_batch_size, total_epochs, min_batch_size=1, start_p=0.3):
+    # Using a superconvergence schedule for batch size increase
     t = epoch / (total_epochs - 1)
-    batch_size = int(initial_batch_size + (max_batch_size - initial_batch_size) * t)
-    
-    return min(batch_size, max_batch_size)
+    if t < start_p:
+        batch_size = int(initial_batch_size*((min_batch_size/initial_batch_size)**(1.0/(total_epochs*start_p-1)))**epoch)
+    elif t < (2 * start_p):
+        batch_size = int(min_batch_size*((initial_batch_size/min_batch_size)**(1.0/(total_epochs*start_p-1)))**(epoch-(total_epochs*start_p)))
+    else:
+        batch_size = int(initial_batch_size*((max_batch_size/initial_batch_size)**(1.0/(total_epochs*(1-2*start_p))))**(epoch-(2*total_epochs*start_p)+1))
+    # batch_size = int(initial_batch_size + (max_batch_size - initial_batch_size) * t)
+    print(f"{epoch+1}/{total_epochs}")
+    print(batch_size)
+    return batch_size
 
 def main(CIFAR: bool = False, model_type: str = ""):
     if CIFAR:
@@ -151,7 +158,7 @@ def main(CIFAR: bool = False, model_type: str = ""):
             ).cuda()
         else:
             model = DiT_Llama(
-                channels, 32, dim=64, n_layers=5, n_heads=8, num_classes=10
+                channels, 32, dim=64, n_layers=3, n_heads=8, num_classes=10
             ).cuda()
 
     else:
@@ -177,39 +184,41 @@ def main(CIFAR: bool = False, model_type: str = ""):
         else:
             from dit import DiT_Llama
         model = DiT_Llama(
-                channels, 32, dim=64, n_layers=3, n_heads=4, num_classes=10
+                channels, 32, dim=64, n_layers=5, n_heads=4, num_classes=10
             ).cuda()
 
     model_size = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Number of parameters: {model_size}, {model_size / 1e6:2f}M")
     
     hyperparameter_defaults = dict(
-        epochs = 5,
-        learning_rate = 1e-3,
-        initial_batch_size = 16,
+        epochs = 7,
+        learning_rate = 2**-10,
+        initial_batch_size = 32,
         max_batch_size = 256,
         beta_1 = 0.95,
         beta_2 = 0.95,
         shampoo_beta = 0.95,
-        weight_decay = 0.1,
+        weight_decay = 0.0,
         precondition_freq = 4,
         eps = 1e-7,
-        model_size = model_size
+        model_size = model_size,
+        model_type = model_type
     )
 
-    wandb.init(config=hyperparameter_defaults, project=f"rf_searchy")
+    wandb.init(config=hyperparameter_defaults, project=f"rf_mnist")
     config = wandb.config
     total_time = 0
 
     rf = RF(model)
-    optimizer = SOAP(model.parameters(), lr=config.learning_rate)
+    optimizer = SOAP(model.parameters(), lr=config.learning_rate, precondition_frequency=config.precondition_freq, 
+                     betas=(config.beta_1, config.beta_2), weight_decay=config.weight_decay)
     # scheduler = optim.lr_scheduler.OneCycleLR(optimizer, max_lr=config.learning_rate, epochs=config.epochs, steps_per_epoch=int(6e+4//config.batch_size))
 
     mnist = fdatasets(root="./data", train=True, download=True, transform=transform)
 
     for epoch in range(config.epochs):
         start_time = time.time()
-        current_batch_size = get_batch_size(epoch, config.initial_batch_size, config.max_batch_size, config.epochs)
+        current_batch_size = get_batch_size(epoch, config.initial_batch_size, config.max_batch_size, config.epochs, min_batch_size=8)
         dataloader = DataLoader(mnist, batch_size=current_batch_size, shuffle=True, drop_last=True)
 
         lossbin = {i: 0 for i in range(10)}
