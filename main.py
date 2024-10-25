@@ -2,6 +2,7 @@ import typer
 import torch
 import torch.nn as nn
 import math
+torch.autograd.set_detect_anomaly(True)
 
 class PerceptualLoss(nn.Module):
     def __init__(self):

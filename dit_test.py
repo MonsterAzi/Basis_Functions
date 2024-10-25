@@ -72,97 +72,60 @@ class LabelEmbedder(nn.Module):
         return embeddings
 
 
+class Task(nn.Module):
+    def __init__(self, dim):
+        super(Task, self).__init__()
+        self.dim = dim
+        self.t_k = nn.Parameter(torch.randn(dim, dim))
+        self.t_v = nn.Parameter(torch.randn(dim, dim))
+        self.t_q = nn.Parameter(torch.randn(dim, dim))
+
+    def loss(self, f, x):
+        # Transpose x to make dimensions compatible for matrix multiplication
+        train_view = self.t_k @ x.T  # Transpose x (from [256, 64] to [64, 256])
+        label_view = self.t_v @ x.T  # Same for t_v
+        return nn.functional.mse_loss(f(train_view.T).T, label_view)
+
+class OGD(nn.Module):
+    def __init__(self, lr=0.01):
+        super(OGD, self).__init__()
+        self.lr = lr
+
+    def step(self, model, grads):
+        with torch.no_grad():
+            for param, grad in zip(model.parameters(), grads):
+                param = param - self.lr * grad
+
+class Learner(nn.Module):
+    def __init__(self, task, dim):
+        super(Learner, self).__init__()
+        self.task = task
+        self.model = nn.Linear(dim, dim)
+        self.optim = OGD()
+
+    def train_step(self, x):
+        loss = self.task.loss(self.model, x)
+        grad_fn = torch.autograd.grad(loss, self.model.parameters(), create_graph=True)
+        self.optim.step(self.model, grad_fn)
+
+    def predict(self, x):
+        view = self.task.t_q @ x.T
+        return self.model(view.T)
+
 class Attention(nn.Module):
-    def __init__(self, dim, n_heads, n_resolutions=3, dropout=0.0):
-        super().__init__()
+    def __init__(self, dim, _):
+        super(Attention, self).__init__()
+        self.dim = dim
+        self.task = Task(dim)
+        self.learner = Learner(self.task, dim)
 
-        self.n_heads = n_heads
-        self.n_resolutions = n_resolutions
-        self.head_dim = dim // n_heads
-        self.dropout = dropout
-
-        # Original Query Linear Transformation (Remains Unchanged)
-        self.wq = nn.Linear(dim, n_heads * self.head_dim, bias=False)
-        
-        # Multi-Resolution Key/Value Encoding
-        self.wk_multi_res = nn.ModuleList([nn.Linear(dim, self.n_heads * self.head_dim, bias=False) for _ in range(n_resolutions)])
-        self.wv_multi_res = nn.ModuleList([nn.Linear(dim, self.n_heads * self.head_dim, bias=False) for _ in range(n_resolutions)])
-
-        # Adaptive Mixture Weights
-        self.w_mixture = nn.Linear(dim, n_resolutions, bias=False)
-        self.softmax = nn.Softmax(dim=-1)
-
-        # Output Linear Transformation
-        self.wo = nn.Linear(n_heads * self.head_dim, dim, bias=False)
-
-        # Normalization Layers
-        self.q_norm = nn.LayerNorm(n_heads * self.head_dim)
-        self.k_norms = nn.ModuleList([nn.LayerNorm(n_heads * self.head_dim) for _ in range(n_resolutions)])
-
-    @staticmethod
-    def reshape_for_broadcast(freqs_cis, x):
-        # Reused from the original code with no modifications
-        ndim = x.ndim
-        assert 0 <= 1 < ndim
-        _freqs_cis = freqs_cis[: x.shape[1]]
-        shape = [d if i == 1 or i == ndim - 1 else 1 for i, d in enumerate(x.shape)]
-        return _freqs_cis.view(*shape)
-
-    @staticmethod
-    def apply_rotary_emb(xq, xk, freqs_cis):
-        # Reused from the original code with no modifications
-        xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))
-        xk_ = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], -1, 2))
-        freqs_cis_xq = Attention.reshape_for_broadcast(freqs_cis, xq_)
-        freqs_cis_xk = Attention.reshape_for_broadcast(freqs_cis, xk_)
-
-        xq_out = torch.view_as_real(xq_ * freqs_cis_xq).flatten(3)
-        xk_out = torch.view_as_real(xk_ * freqs_cis_xk).flatten(3)
-        return xq_out, xk_out
-
-    def forward(self, x, freqs_cis):
-        bsz, seqlen, _ = x.shape
-
-        # Original Query Transformation
-        xq = self.wq(x)
-        xq = self.q_norm(xq)
-        xq = xq.view(bsz, seqlen, self.n_heads, self.head_dim)
-
-        # Multi-Resolution Key/Value Encoding and Normalization
-        xk_multi_res = [self.k_norms[i](wk(x)) for i, wk in enumerate(self.wk_multi_res)]
-        xv_multi_res = [wv(x) for wv in self.wv_multi_res]
-        xk_multi_res = [k.view(bsz, seqlen, self.n_heads, self.head_dim) for k in xk_multi_res]
-        xv_multi_res = [v.view(bsz, seqlen, self.n_heads, self.head_dim) for v in xv_multi_res]
-
-        # Apply Rotary Embedding
-        xq_multi_res = [xq] * self.n_resolutions
-        xk_multi_res_emb = [self.apply_rotary_emb(xq, k, freqs_cis)[1] for xq, k in zip(xq_multi_res, xk_multi_res)]
-        xq_multi_res_emb = [self.apply_rotary_emb(xq, xq, freqs_cis)[0] for xq in xq_multi_res]
-
-        # Adaptive Mixture Weights
-        mixture_weights = self.softmax(self.w_mixture(x))  # [bsz, seqlen, n_resolutions]
-
-        # Compute Attention for Each Resolution and Mix
-        outputs = []
-        for i in range(self.n_resolutions):
-            output = F.scaled_dot_product_attention(
-                xq_multi_res_emb[i].permute(0, 2, 1, 3),
-                xk_multi_res_emb[i].permute(0, 2, 1, 3),
-                xv_multi_res[i].permute(0, 2, 1, 3),
-                dropout_p=self.dropout,
-                is_causal=False,
-            ).permute(0, 2, 1, 3)
-            output = output.flatten(-2)  # [bsz, seqlen, n_heads * head_dim]
-            outputs.append(output)
-
-        # Mix Outputs based on Learned Weights
-        outputs = [output * mixture_weights[..., i].unsqueeze(-1) for i, output in enumerate(outputs)]
-        mixed_output = torch.stack(outputs, dim=0).sum(dim=0)  # [bsz, seqlen, n_heads * head_dim]
-
-        # Final Linear Transformation
-        final_output = self.wo(mixed_output)
-
-        return final_output
+    def forward(self, x, _):
+        out_seq = []
+        for tok in x:
+            self.learner.train_step(tok)
+            out_seq.append(self.learner.predict(tok))
+        out_seq = torch.stack(out_seq, dim=0)
+        return out_seq
 
 
 class FeedForward(nn.Module):
@@ -371,7 +334,7 @@ class DiT_Llama(nn.Module):
 
 
 def DiT_Llama_600M_patch2(**kwargs):
-    return DiT_Llama(patch_size=2, dim=256, n_layers=16, n_heads=32, **kwargs)
+    return DiT_Llama(patch_size=2, dim=128, n_layers=16, n_heads=32, **kwargs)
 
 
 def DiT_Llama_3B_patch2(**kwargs):
@@ -385,8 +348,7 @@ if __name__ == "__main__":
     t = torch.randint(0, 100, (2,))
     y = torch.randint(0, 10, (2,))
 
-    with torch.no_grad():
-        out = model(x, t, y)
-        print(out.shape)
-        out = model.forward_with_cfg(x, t, y, 0.5)
-        print(out.shape)
+    out = model(x, t, y)
+    print(out.shape)
+    out = model.forward_with_cfg(x, t, y, 0.5)
+    print(out.shape)
