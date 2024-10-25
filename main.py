@@ -2,7 +2,6 @@ import typer
 import torch
 import torch.nn as nn
 import math
-torch.autograd.set_detect_anomaly(True)
 
 class PerceptualLoss(nn.Module):
     def __init__(self):
@@ -251,33 +250,32 @@ def main(CIFAR: bool = False, model_type: str = ""):
         wandb.log({f"lossbin_{i}": lossbin[i] / losscnt[i] for i in range(10)})
 
         rf.model.eval()
-        with torch.no_grad():
-            cond = torch.arange(0, 16).cuda() % 10
-            uncond = torch.ones_like(cond) * 10
+        cond = torch.arange(0, 16).cuda() % 10
+        uncond = torch.ones_like(cond) * 10
 
-            init_noise = torch.randn(16, channels, 32, 32).cuda()
-            images = rf.sample(init_noise, cond, uncond)
-            # image sequences to gif
-            gif = []
-            for image in images:
-                # unnormalize
-                image = image * 0.5 + 0.5
-                image = image.clamp(0, 1)
-                x_as_image = make_grid(image.float(), nrow=4)
-                img = x_as_image.permute(1, 2, 0).cpu().numpy()
-                img = (img * 255).astype(np.uint8)
-                gif.append(Image.fromarray(img))
+        init_noise = torch.randn(16, channels, 32, 32).cuda()
+        images = rf.sample(init_noise, cond, uncond)
+        # image sequences to gif
+        gif = []
+        for image in images:
+            # unnormalize
+            image = image * 0.5 + 0.5
+            image = image.clamp(0, 1)
+            x_as_image = make_grid(image.float(), nrow=4)
+            img = x_as_image.permute(1, 2, 0).cpu().numpy()
+            img = (img * 255).astype(np.uint8)
+            gif.append(Image.fromarray(img))
 
-            gif[0].save(
-                f"contents/sample_{epoch}.gif",
-                save_all=True,
-                append_images=gif[1:],
-                duration=100,
-                loop=0,
-            )
+        gif[0].save(
+            f"contents/sample_{epoch}.gif",
+            save_all=True,
+            append_images=gif[1:],
+            duration=100,
+            loop=0,
+        )
 
-            last_img = gif[-1]
-            last_img.save(f"contents/sample_{epoch}_last.png")
+        last_img = gif[-1]
+        last_img.save(f"contents/sample_{epoch}_last.png")
 
         rf.model.train()
     
