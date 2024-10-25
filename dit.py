@@ -302,7 +302,7 @@ class DiT_Llama(nn.Module):
         x = x.permute(0, 2, 4, 1, 3, 5).flatten(-3).flatten(1, 2)
         return x
 
-    def forward(self, x, t, y, return_feature=None):
+    def forward(self, x, t, y):
         self.freqs_cis = self.freqs_cis.to(x.device)
 
         x = self.init_conv_seq(x)
@@ -316,8 +316,6 @@ class DiT_Llama(nn.Module):
 
         for i, layer in enumerate(self.layers):
             x = layer(x, self.freqs_cis[: x.size(1)], adaln_input=adaln_input)
-            if return_feature == i:
-                return x
                 
 
         x = self.final_layer(x, adaln_input)

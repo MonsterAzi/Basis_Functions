@@ -87,7 +87,7 @@ class Task(nn.Module):
         return nn.functional.mse_loss(f(train_view.T).T, label_view)
 
 class OGD(nn.Module):
-    def __init__(self, lr=0.01):
+    def __init__(self, lr=1):
         super(OGD, self).__init__()
         self.lr = lr
 
@@ -113,38 +113,70 @@ class Learner(nn.Module):
         return self.model(view.T)
 
 class Attention(nn.Module):
-    def __init__(self, dim, _):
-        super(Attention, self).__init__()
-        self.dim = dim
-        self.task = Task(dim)
-        self.learner = Learner(self.task, dim)
+    def __init__(self, dim, n_heads):
+        super().__init__()
 
-    def forward(self, x, _):
-        out_seq = []
-        for tok in x:
-            self.learner.train_step(tok)
-            out_seq.append(self.learner.predict(tok))
-        out_seq = torch.stack(out_seq, dim=0)
-        return out_seq
+        self.n_heads = n_heads
+        self.n_rep = 1
+        self.head_dim = dim // n_heads
 
+        self.wq = nn.Linear(dim, n_heads * self.head_dim, bias=False)
+        self.wk = nn.Linear(dim, self.n_heads * self.head_dim, bias=False)
+        self.wv = nn.Linear(dim, self.n_heads * self.head_dim, bias=False)
+        self.wo = nn.Linear(n_heads * self.head_dim, dim, bias=False)
+
+        self.q_norm = nn.LayerNorm(self.n_heads * self.head_dim)
+        self.k_norm = nn.LayerNorm(self.n_heads * self.head_dim)
+
+    def forward(self, x):
+        bsz, seqlen, _ = x.shape
+
+        xq, xk, xv = self.wq(x), self.wk(x), self.wv(x)
+
+        dtype = xq.dtype
+
+        xq = self.q_norm(xq)
+        xk = self.k_norm(xk)
+
+        xq = xq.view(bsz, seqlen, self.n_heads, self.head_dim)
+        xk = xk.view(bsz, seqlen, self.n_heads, self.head_dim)
+        xv = xv.view(bsz, seqlen, self.n_heads, self.head_dim)
+
+        output = F.scaled_dot_product_attention(
+            xq.permute(0, 2, 1, 3),
+            xk.permute(0, 2, 1, 3),
+            xv.permute(0, 2, 1, 3),
+            dropout_p=0.0,
+            is_causal=True,
+        ).permute(0, 2, 1, 3)
+        output = output.flatten(-2)
+
+        return self.wo(output)
 
 class FeedForward(nn.Module):
     def __init__(self, dim, hidden_dim, multiple_of, ffn_dim_multiplier=None):
         super().__init__()
-        hidden_dim = int(2 * hidden_dim / 3)
-        if ffn_dim_multiplier:
-            hidden_dim = int(ffn_dim_multiplier * hidden_dim)
-        hidden_dim = multiple_of * ((hidden_dim + multiple_of - 1) // multiple_of)
+        
+        self.conv1 = nn.Conv2d(dim, dim, kernel_size=1)
+        self.conv2 = nn.Conv2d(dim, dim, kernel_size=3, padding=1)
+        self.conv3 = nn.Conv2d(dim, dim, kernel_size=1)  # *2 for concatenation
 
-        self.w1 = nn.Linear(dim, hidden_dim, bias=False)
-        self.w2 = nn.Linear(hidden_dim, dim, bias=False)
-        self.w3 = nn.Linear(dim, hidden_dim, bias=False)
-
-    def _forward_silu_gating(self, x1, x3):
-        return F.silu(x1) * x3
-
-    def forward(self, x):
-        return self.w2(self._forward_silu_gating(self.w1(x), self.w3(x)))
+    def forward(self, x):  # Shape of x: [batch_size, seqlen, dim]
+        # Reshape x to [batch_size, dim, 1, seqlen]
+        x = x.permute(0, 2, 1).unsqueeze(2)
+        
+        out1 = self.conv1(x)
+        out2 = self.conv2(out1)
+        out2_sin = torch.sin(out2)
+        
+        # multiply along channel dimension
+        mult = out2 * out2_sin
+        
+        out = self.conv3(mult)
+        
+        # Reshape back to [batch_size, seqlen, dim]
+        out = out.squeeze(2).permute(0, 2, 1)
+        return out
 
 
 class TransformerBlock(nn.Module):
@@ -176,20 +208,20 @@ class TransformerBlock(nn.Module):
             nn.Linear(min(dim, 1024), 6 * dim, bias=True),
         )
 
-    def forward(self, x, freqs_cis, adaln_input=None):
+    def forward(self, x, adaln_input=None):
         if adaln_input is not None:
             shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = (
                 self.adaLN_modulation(adaln_input).chunk(6, dim=1)
             )
 
             x = x + gate_msa.unsqueeze(1) * self.attention(
-                modulate(self.attention_norm(x), shift_msa, scale_msa), freqs_cis
+                modulate(self.attention_norm(x), shift_msa, scale_msa)
             )
             x = x + gate_mlp.unsqueeze(1) * self.feed_forward(
                 modulate(self.ffn_norm(x), shift_mlp, scale_mlp)
             )
         else:
-            x = x + self.attention(self.attention_norm(x), freqs_cis)
+            x = x + self.attention(self.attention_norm(x))
             x = x + self.feed_forward(self.ffn_norm(x))
 
         return x
@@ -269,8 +301,6 @@ class DiT_Llama(nn.Module):
         )
         self.final_layer = FinalLayer(dim, patch_size, self.out_channels)
 
-        self.freqs_cis = self.precompute_freqs_cis(dim // n_heads, 4096)
-
     def unpatchify(self, x):
         c = self.out_channels
         p = self.patch_size
@@ -294,7 +324,6 @@ class DiT_Llama(nn.Module):
         return x
 
     def forward(self, x, t, y, return_feature=None):
-        self.freqs_cis = self.freqs_cis.to(x.device)
 
         x = self.init_conv_seq(x)
 
@@ -305,9 +334,8 @@ class DiT_Llama(nn.Module):
         y = self.y_embedder(y, self.training)  # (N, D)
         adaln_input = t.to(x.dtype) + y.to(x.dtype)
 
-        for i, layer in enumerate(self.layers):
-            x = layer(x, self.freqs_cis[: x.size(1)], adaln_input=adaln_input)
-                
+        for layer in self.layers:
+            x = layer(x, adaln_input=adaln_input)
 
         x = self.final_layer(x, adaln_input)
         x = self.unpatchify(x)  # (N, out_channels, H, W)
@@ -324,17 +352,9 @@ class DiT_Llama(nn.Module):
         eps = torch.cat([half_eps, half_eps], dim=0)
         return torch.cat([eps, rest], dim=1)
 
-    @staticmethod
-    def precompute_freqs_cis(dim, end, theta=10000.0):
-        freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
-        t = torch.arange(end)
-        freqs = torch.outer(t, freqs).float()
-        freqs_cis = torch.polar(torch.ones_like(freqs), freqs)
-        return freqs_cis
-
 
 def DiT_Llama_600M_patch2(**kwargs):
-    return DiT_Llama(patch_size=2, dim=128, n_layers=16, n_heads=32, **kwargs)
+    return DiT_Llama(patch_size=2, dim=64, n_layers=16, n_heads=32, **kwargs)
 
 
 def DiT_Llama_3B_patch2(**kwargs):
