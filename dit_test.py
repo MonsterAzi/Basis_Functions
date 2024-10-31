@@ -156,27 +156,20 @@ class Attention(nn.Module):
 class FeedForward(nn.Module):
     def __init__(self, dim, hidden_dim, multiple_of, ffn_dim_multiplier=None):
         super().__init__()
-        
-        self.conv1 = nn.Conv2d(dim, dim, kernel_size=1)
-        self.conv2 = nn.Conv2d(dim, dim, kernel_size=3, padding=1)
-        self.conv3 = nn.Conv2d(dim, dim, kernel_size=1)  # *2 for concatenation
+        hidden_dim = int(2 * hidden_dim / 3)
+        if ffn_dim_multiplier:
+            hidden_dim = int(ffn_dim_multiplier * hidden_dim)
+        hidden_dim = multiple_of * ((hidden_dim + multiple_of - 1) // multiple_of)
 
-    def forward(self, x):  # Shape of x: [batch_size, seqlen, dim]
-        # Reshape x to [batch_size, dim, 1, seqlen]
-        x = x.permute(0, 2, 1).unsqueeze(2)
-        
-        out1 = self.conv1(x)
-        out2 = self.conv2(out1)
-        out2_sin = torch.sin(out2)
-        
-        # multiply along channel dimension
-        mult = out2 * out2_sin
-        
-        out = self.conv3(mult)
-        
-        # Reshape back to [batch_size, seqlen, dim]
-        out = out.squeeze(2).permute(0, 2, 1)
-        return out
+        self.w1 = nn.Linear(dim, hidden_dim, bias=False)
+        self.w2 = nn.Linear(hidden_dim, dim, bias=False)
+        self.w3 = nn.Linear(dim, hidden_dim, bias=False)
+
+    def _forward_silu_gating(self, x1, x3):
+        return F.silu(x1) * x3
+
+    def forward(self, x):
+        return self.w2(self._forward_silu_gating(self.w1(x), self.w3(x)))
 
 
 class TransformerBlock(nn.Module):

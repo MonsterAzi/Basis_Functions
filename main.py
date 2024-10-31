@@ -181,6 +181,8 @@ def main(CIFAR: bool = False, model_type: str = ""):
             from dit_best import DiT_Llama
         elif model_type == "Hyper":
             from hyper_dit import DiT_Llama
+        elif model_type == "SiT":
+            from sit import DiT_Llama
         else:
             from dit import DiT_Llama
         model = DiT_Llama(
