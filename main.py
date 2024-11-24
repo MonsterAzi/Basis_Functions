@@ -147,7 +147,10 @@ def main(CIFAR: bool = False, model_type: str = ""):
     mnist = fdatasets(root="./data", train=True, download=True, transform=transform)
     dataloader = DataLoader(mnist, batch_size=config.batch_size, shuffle=True, drop_last=True)
 
+    stop = False
     for epoch in range(config.epochs):
+        if stop:
+            break
         start_time = time.time()
 
         lossbin = {i: 0 for i in range(10)}
@@ -165,7 +168,7 @@ def main(CIFAR: bool = False, model_type: str = ""):
 
             # Stop when hit cut-off
             if loss_log.item() < 0.1:
-                break
+                stop = True
 
             # count based on t
             for t, l in blsct:
