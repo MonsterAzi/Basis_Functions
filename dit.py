@@ -314,7 +314,7 @@ class DiT_Llama(nn.Module):
         y = self.y_embedder(y, self.training)  # (N, D)
         adaln_input = t.to(x.dtype) + y.to(x.dtype)
 
-        for layer in layers:
+        for layer in self.layers:
             x = layer(x, self.freqs_cis[: x.size(1)], adaln_input=adaln_input)
 
         x = self.final_layer(x, adaln_input)
@@ -339,10 +339,6 @@ class DiT_Llama(nn.Module):
         freqs = torch.outer(t, freqs).float()
         freqs_cis = torch.polar(torch.ones_like(freqs), freqs)
         return freqs_cis
-
-def normalize_matrices(model):
-    with torch.no_grad():
-        pass
 
 
 def DiT_Llama_600M_patch2(**kwargs):
