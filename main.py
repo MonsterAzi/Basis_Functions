@@ -119,7 +119,7 @@ def main(CIFAR: bool = False, model_type: str = ""):
     print(f"Number of parameters: {model_size}, {model_size / 1e6:2f}M")
     
     hyperparameter_defaults = dict(
-        epochs = 5,
+        epochs = 25,
         learning_rate = 2**-11,
         batch_size = 256,
         beta_1 = 0.95,
@@ -162,9 +162,9 @@ def main(CIFAR: bool = False, model_type: str = ""):
 
             wandb.log({"loss": loss_log.item(),
                        "score": expected_loss / loss_log.item()})
-            
+
             # Stop when hit cut-off
-            if loss_log.item() > 0.1:
+            if loss_log.item() < 0.1:
                 break
 
             # count based on t
