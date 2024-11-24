@@ -139,7 +139,7 @@ def main(CIFAR: bool = False, model_type: str = ""):
     expected_loss = (model_size / 5.4 * 10**4)**(-0.107)
 
     rf = RF(model)
-    optimizer = torch.optim.Adam(rf.model.parameters(), lr=config.learning_rate, betas=(config.beta1, config.beta2), weight_decay=config.weight_decay)
+    optimizer = torch.optim.Adam(rf.model.parameters(), lr=config.learning_rate, betas=(config.beta_1, config.beta_2), weight_decay=config.weight_decay)
     # from power_scheduler import PowerScheduler
     # scheduler = PowerScheduler(optimizer, config.batch_size, lr_max=config.learning_rate,
     #                            warmup_percent=0.05, decay_percent=0.35, total_tokens=config.epochs*6e4)
