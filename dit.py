@@ -80,10 +80,10 @@ class Attention(nn.Module):
         self.n_rep = 1
         self.head_dim = dim // n_heads
 
-        self.wq = nn.Linear(dim, n_heads * self.head_dim, bias=False)
+        self.wq = nn.Linear(dim, self.n_heads * self.head_dim, bias=False)
         self.wk = nn.Linear(dim, self.n_heads * self.head_dim, bias=False)
         self.wv = nn.Linear(dim, self.n_heads * self.head_dim, bias=False)
-        self.wo = nn.Linear(n_heads * self.head_dim, dim, bias=False)
+        self.wo = nn.Linear(self.n_heads * self.head_dim, dim, bias=False)
 
         self.q_norm = nn.LayerNorm(self.n_heads * self.head_dim)
         self.k_norm = nn.LayerNorm(self.n_heads * self.head_dim)
@@ -314,9 +314,8 @@ class DiT_Llama(nn.Module):
         y = self.y_embedder(y, self.training)  # (N, D)
         adaln_input = t.to(x.dtype) + y.to(x.dtype)
 
-        for i, layer in enumerate(self.layers):
+        for layer in layers:
             x = layer(x, self.freqs_cis[: x.size(1)], adaln_input=adaln_input)
-                
 
         x = self.final_layer(x, adaln_input)
         x = self.unpatchify(x)  # (N, out_channels, H, W)
@@ -347,7 +346,7 @@ def normalize_matrices(model):
 
 
 def DiT_Llama_600M_patch2(**kwargs):
-    return DiT_Llama(patch_size=2, dim=256, n_layers=16, n_heads=32, **kwargs)
+    return DiT_Llama(patch_size=2, dim=64, n_layers=16, n_heads=32, **kwargs)
 
 
 def DiT_Llama_3B_patch2(**kwargs):

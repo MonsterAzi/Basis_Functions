@@ -207,14 +207,6 @@ def main(CIFAR: bool = False, model_type: str = ""):
         channels = 1
         if model_type == "test":
             from dit_test import DiT_Llama
-        elif model_type == "best":
-            from dit_best import DiT_Llama
-        elif model_type == "SiT":
-            from sit import DiT_Llama
-        elif model_type == "nDiT":
-            from ndit import DiT_Llama
-        elif model_type == "nDiT_test":
-            from nGPT import DiT_Llama
         else:
             from dit import DiT_Llama
         model = DiT_Llama(
