@@ -8,8 +8,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-def modulate(x, shift, scale):
-    return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
+def justnorm(x, dim=-1):
+        return F.normalize(x, p=2, dim=dim)
 
 
 class TimestepEmbedder(nn.Module):
@@ -84,9 +84,10 @@ class Attention(nn.Module):
         self.wk = nn.Linear(dim, self.n_heads * self.head_dim, bias=False)
         self.wv = nn.Linear(dim, self.n_heads * self.head_dim, bias=False)
         self.wo = nn.Linear(n_heads * self.head_dim, dim, bias=False)
-
-        self.q_norm = nn.LayerNorm(self.n_heads * self.head_dim)
-        self.k_norm = nn.LayerNorm(self.n_heads * self.head_dim)
+        
+        self.sqk_init_value = 1.0
+        self.sqk_init_scaling = 1 / math.sqrt(dim)
+        self.sqk = torch.nn.Parameter(self.sqk_init_scaling*torch.ones(dim, dtype=torch.float32))
 
     @staticmethod
     def reshape_for_broadcast(freqs_cis, x):
@@ -113,17 +114,15 @@ class Attention(nn.Module):
 
         xq, xk, xv = self.wq(x), self.wk(x), self.wv(x)
 
-        dtype = xq.dtype
-
-        xq = self.q_norm(xq)
-        xk = self.k_norm(xk)
-
         xq = xq.view(bsz, seqlen, self.n_heads, self.head_dim)
         xk = xk.view(bsz, seqlen, self.n_heads, self.head_dim)
         xv = xv.view(bsz, seqlen, self.n_heads, self.head_dim)
 
         xq, xk = self.apply_rotary_emb(xq, xk, freqs_cis=freqs_cis)
-        xq, xk = xq.to(dtype), xk.to(dtype)
+        
+        sqk = (self.sqk * (self.sqk_init_value/self.sqk_init_scaling)).view(1, 1, self.n_heads, self.head_dim)
+        xq = sqk * justnorm(xq)
+        xk = sqk * justnorm(xk)
 
         output = F.scaled_dot_product_attention(
             xq.permute(0, 2, 1, 3),
@@ -131,6 +130,50 @@ class Attention(nn.Module):
             xv.permute(0, 2, 1, 3),
             dropout_p=0.0,
             is_causal=False,
+            scale=math.sqrt(self.head_dim),
+        ).permute(0, 2, 1, 3)
+        output = output.flatten(-2)
+
+        return self.wo(output)
+
+
+class CrossAttention(nn.Module):
+    def __init__(self, dim, n_heads):
+        super().__init__()
+
+        self.n_heads = n_heads
+        self.head_dim = dim // n_heads
+
+        self.wq = nn.Linear(dim, n_heads * self.head_dim, bias=False)
+        self.wk = nn.Linear(dim, n_heads * self.head_dim, bias=False)
+        self.wv = nn.Linear(dim, n_heads * self.head_dim, bias=False)
+        self.wo = nn.Linear(n_heads * self.head_dim, dim, bias=False)
+        
+        self.sqk_init_value = 1.0
+        self.sqk_init_scaling = 1 / math.sqrt(dim)
+        self.sqk = torch.nn.Parameter(self.sqk_init_scaling*torch.ones(dim, dtype=torch.float32))
+
+    def forward(self, x, cond_input):
+        bsz, seqlen, _ = x.shape
+        cond_seqlen, _ = cond_input.shape
+
+        xq, xk, xv = self.wq(x), self.wk(cond_input), self.wv(cond_input)
+
+        xq = xq.view(bsz, seqlen, self.n_heads, self.head_dim)
+        xk = xk.view(1, cond_seqlen, self.n_heads, self.head_dim)
+        xv = xv.view(1, cond_seqlen, self.n_heads, self.head_dim)
+        
+        sqk = (self.sqk * (self.sqk_init_value/self.sqk_init_scaling)).view(1, 1, self.n_heads, self.head_dim)
+        xq = sqk * justnorm(xq)
+        xk = sqk * justnorm(xk)
+
+        output = F.scaled_dot_product_attention(
+            xq.permute(0, 2, 1, 3),
+            xk.permute(0, 2, 1, 3),
+            xv.permute(0, 2, 1, 3),
+            dropout_p=0.0,
+            is_causal=False,
+            scale=math.sqrt(self.head_dim),
         ).permute(0, 2, 1, 3)
         output = output.flatten(-2)
 
@@ -144,13 +187,17 @@ class FeedForward(nn.Module):
         if ffn_dim_multiplier:
             hidden_dim = int(ffn_dim_multiplier * hidden_dim)
         hidden_dim = multiple_of * ((hidden_dim + multiple_of - 1) // multiple_of)
+        self.dim = dim
 
         self.w1 = nn.Linear(dim, hidden_dim, bias=False)
         self.w2 = nn.Linear(hidden_dim, dim, bias=False)
         self.w3 = nn.Linear(dim, hidden_dim, bias=False)
+        
+        self.su = torch.nn.Parameter(torch.ones(hidden_dim, dtype=torch.float32))
+        self.sv = torch.nn.Parameter(torch.ones(hidden_dim, dtype=torch.float32))
 
     def _forward_silu_gating(self, x1, x3):
-        return F.silu(x1) * x3
+        return torch.sin(x1 * (self.dim ** 0.5) * self.sv) * x3 * self.su
 
     def forward(self, x):
         return self.w2(self._forward_silu_gating(self.w1(x), self.w3(x)))
@@ -170,6 +217,7 @@ class TransformerBlock(nn.Module):
         self.dim = dim
         self.head_dim = dim // n_heads
         self.attention = Attention(dim, n_heads)
+        self.cross_attention = CrossAttention(dim, n_heads)
         self.feed_forward = FeedForward(
             dim=dim,
             hidden_dim=4 * dim,
@@ -177,29 +225,44 @@ class TransformerBlock(nn.Module):
             ffn_dim_multiplier=ffn_dim_multiplier,
         )
         self.layer_id = layer_id
-        self.attention_norm = nn.LayerNorm(dim, eps=norm_eps)
-        self.ffn_norm = nn.LayerNorm(dim, eps=norm_eps)
+        
+        self.attn_alpha_init_value = 0.05
+        self.attn_alpha_init_scaling = 1 / math.sqrt(dim)
+        self.attn_alpha = torch.nn.Parameter(self.attn_alpha_init_scaling*torch.ones(dim, dtype=torch.float32))
+        
+        self.cross_alpha_init_value = 0.05
+        self.cross_alpha_init_scaling = 1 / math.sqrt(dim)
+        self.cross_alpha = torch.nn.Parameter(self.cross_alpha_init_scaling*torch.ones(dim, dtype=torch.float32))
 
-        self.adaLN_modulation = nn.Sequential(
-            nn.SiLU(),
-            nn.Linear(min(dim, 1024), 6 * dim, bias=True),
-        )
+        self.mlp_alpha_init_value = 0.05
+        self.mlp_alpha_init_scaling = 1 / math.sqrt(dim)
+        self.mlp_alpha = torch.nn.Parameter(self.mlp_alpha_init_scaling*torch.ones(dim, dtype=torch.float32))
 
-    def forward(self, x, freqs_cis, adaln_input=None):
-        if adaln_input is not None:
-            shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = (
-                self.adaLN_modulation(adaln_input).chunk(6, dim=1)
-            )
+    def forward(self, x, freqs_cis, cond_input):
+        lr = self.attn_alpha * (self.attn_alpha_init_value / self.attn_alpha_init_scaling)
+        lr = torch.abs(lr)
+        x_att = self.attention(x, freqs_cis)
+        A_norm = justnorm(x)
+        B_norm = justnorm(x_att)
+        res = A_norm + lr * (B_norm - A_norm)
+        x = justnorm(res)
 
-            x = x + gate_msa.unsqueeze(1) * self.attention(
-                modulate(self.attention_norm(x), shift_msa, scale_msa), freqs_cis
-            )
-            x = x + gate_mlp.unsqueeze(1) * self.feed_forward(
-                modulate(self.ffn_norm(x), shift_mlp, scale_mlp)
-            )
-        else:
-            x = x + self.attention(self.attention_norm(x), freqs_cis)
-            x = x + self.feed_forward(self.ffn_norm(x))
+
+        lr = self.cross_alpha * (self.cross_alpha_init_value / self.cross_alpha_init_scaling)
+        lr = torch.abs(lr)
+        x_cross = self.cross_attention(x, cond_input)
+        A_norm = justnorm(x)
+        B_norm = justnorm(x_cross)
+        res = A_norm + lr * (B_norm - A_norm)
+        x = justnorm(res)
+        
+        lr = self.mlp_alpha * (self.mlp_alpha_init_value / self.mlp_alpha_init_scaling)
+        lr = torch.abs(lr)
+        x_mlp = self.feed_forward(x)
+        A_norm = justnorm(x)
+        B_norm = justnorm(x_mlp)
+        res = A_norm + lr * (B_norm - A_norm)
+        x = justnorm(res)
 
         return x
 
@@ -207,22 +270,18 @@ class TransformerBlock(nn.Module):
 class FinalLayer(nn.Module):
     def __init__(self, hidden_size, patch_size, out_channels):
         super().__init__()
-        self.norm_final = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
         self.linear = nn.Linear(
-            hidden_size, patch_size * patch_size * out_channels, bias=True
+            hidden_size, patch_size * patch_size * out_channels, bias=False
         )
-        self.adaLN_modulation = nn.Sequential(
-            nn.SiLU(),
-            nn.Linear(min(hidden_size, 1024), 2 * hidden_size, bias=True),
-        )
-        # # init zero
-        nn.init.constant_(self.linear.weight, 0)
-        nn.init.constant_(self.linear.bias, 0)
+        
+        self.sz_init_value = 1.00
+        self.sz_init_scaling = 1 / math.sqrt(hidden_size)
+        self.sz = torch.nn.Parameter(self.sz_init_scaling*torch.ones(patch_size * patch_size * out_channels, dtype=torch.float32))
 
-    def forward(self, x, c):
-        shift, scale = self.adaLN_modulation(c).chunk(2, dim=1)
-        x = modulate(self.norm_final(x), shift, scale)
+    def forward(self, x):
+        sz = self.sz * (self.sz_init_value/self.sz_init_scaling)
         x = self.linear(x)
+        x = x * sz
         return x
 
 
@@ -243,6 +302,7 @@ class DiT_Llama(nn.Module):
     ):
         super().__init__()
 
+        self.dim = dim
         self.in_channels = in_channels
         self.out_channels = in_channels
         self.input_size = input_size
@@ -257,8 +317,7 @@ class DiT_Llama(nn.Module):
             nn.GroupNorm(32, dim // 2),
         )
 
-        self.x_embedder = nn.Linear(patch_size * patch_size * dim // 2, dim, bias=True)
-        nn.init.constant_(self.x_embedder.bias, 0)
+        self.x_embedder = nn.Linear(patch_size * patch_size * dim // 2, dim, bias=False)
 
         self.t_embedder = TimestepEmbedder(min(dim, 1024))
         self.y_embedder = LabelEmbedder(num_classes, min(dim, 1024), class_dropout_prob)
@@ -279,6 +338,19 @@ class DiT_Llama(nn.Module):
         self.final_layer = FinalLayer(dim, patch_size, self.out_channels)
 
         self.freqs_cis = self.precompute_freqs_cis(dim // n_heads, 4096)
+        
+        # Weight initialization
+        self.apply(self._init_weights)
+        
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=1 / math.sqrt(self.dim))
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Conv2d):
+            nn.init.xavier_uniform_(module.weight)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
 
     def unpatchify(self, x):
         c = self.out_channels
@@ -306,19 +378,21 @@ class DiT_Llama(nn.Module):
         self.freqs_cis = self.freqs_cis.to(x.device)
 
         x = self.init_conv_seq(x)
-
         x = self.patchify(x)
         x = self.x_embedder(x)
+        x = justnorm(x)
 
         t = self.t_embedder(t)  # (N, D)
+        t = justnorm(t)
         y = self.y_embedder(y, self.training)  # (N, D)
-        adaln_input = t.to(x.dtype) + y.to(x.dtype)
+        y = justnorm(y)
+        cond_input = t.to(x.dtype) + y.to(x.dtype)
+        cond_input = justnorm(cond_input)
 
         for i, layer in enumerate(self.layers):
-            x = layer(x, self.freqs_cis[: x.size(1)], adaln_input=adaln_input)
-                
+            x = layer(x, self.freqs_cis[: x.size(1)], cond_input)
 
-        x = self.final_layer(x, adaln_input)
+        x = self.final_layer(x)
         x = self.unpatchify(x)  # (N, out_channels, H, W)
         
         return x
@@ -340,10 +414,6 @@ class DiT_Llama(nn.Module):
         freqs = torch.outer(t, freqs).float()
         freqs_cis = torch.polar(torch.ones_like(freqs), freqs)
         return freqs_cis
-
-def normalize_matrices(model):
-    with torch.no_grad():
-        pass
 
 
 def DiT_Llama_600M_patch2(**kwargs):

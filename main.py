@@ -124,19 +124,51 @@ class RF:
             images.append(z)
         return images
 
-def get_batch_size(epoch, initial_batch_size, max_batch_size, total_epochs, min_batch_size=1, start_p=0.3):
-    # Using a superconvergence schedule for batch size increase
-    t = epoch / (total_epochs - 1)
-    if t < start_p:
-        batch_size = int(initial_batch_size*((min_batch_size/initial_batch_size)**(1.0/(total_epochs*start_p-1)))**epoch)
-    elif t < (2 * start_p):
-        batch_size = int(min_batch_size*((initial_batch_size/min_batch_size)**(1.0/(total_epochs*start_p-1)))**(epoch-(total_epochs*start_p)))
+def get_lr(it):
+    i=3*int(6e4/256)
+    warmup_iters=0.05
+    warmdown_iters=0.3
+    warmup_iters *= i
+    warmdown_iters *= i
+    assert it <= i
+    # 1) linear warmup for warmup_iters steps
+    if it < warmup_iters:
+        return (it+1) / warmup_iters
+    # 2) constant lr for a while
+    elif it < i - warmdown_iters:
+        return 1.0
+    # 3) linear warmdown
     else:
-        batch_size = int(initial_batch_size*((max_batch_size/initial_batch_size)**(1.0/(total_epochs*(1-2*start_p))))**(epoch-(2*total_epochs*start_p)+1))
-    # batch_size = int(initial_batch_size + (max_batch_size - initial_batch_size) * t)
-    print(f"{epoch+1}/{total_epochs}")
-    print(batch_size)
-    return batch_size
+        decay_ratio = (i - it) / warmdown_iters
+        return decay_ratio
+
+def justnorm(x, idim=-1):
+    dtype = x.dtype
+    x = x.float()
+    res = (x / x.norm(p=2, dim=idim, keepdim=True)).to(dtype=dtype) 
+    return res
+
+def normalize_matrices(model):
+    with torch.no_grad():
+        model.final_layer.linear.weight.data.copy_(justnorm(model.final_layer.linear.weight.data, 1))  # final, n_embd
+        model.x_embedder.weight.data.copy_(justnorm(model.x_embedder.weight.data, 0))  # n_embd, PxP
+        model.t_embedder.mlp[0].weight.copy_(justnorm(model.t_embedder.mlp[0].weight.data, 0))  # n_embd, freq
+        model.t_embedder.mlp[2].weight.copy_(justnorm(model.t_embedder.mlp[2].weight.data, 1))  # n_embd, n_embd
+        model.y_embedder.embedding_table.weight.data.copy_(justnorm(model.y_embedder.embedding_table.weight.data, 1))  # n_embd, C
+        
+        model.final_layer.AdaFM_Proj[-1].weight.data.copy_(justnorm(model.final_layer.AdaFM_Proj[-1].weight.data, 1))   # n_proj, n_embd
+
+        for block in model.layers:
+            block.AdaFM_Proj[-1].weight.data.copy_(justnorm(block.AdaFM_Proj[-1].weight.data, 1))   # n_proj, n_embd
+            
+            block.attention.wq.weight.data.copy_(justnorm(block.attention.wq.weight.data, 1))   # n_proj, n_embd
+            block.attention.wk.weight.data.copy_(justnorm(block.attention.wk.weight.data, 1))   # n_proj, n_embd
+            block.attention.wv.weight.data.copy_(justnorm(block.attention.wv.weight.data, 1))   # n_proj, n_embd
+            block.attention.wo.weight.data.copy_(justnorm(block.attention.wo.weight.data, 0))   # n_embd, n_proj
+
+            block.feed_forward.w1.weight.data.copy_(justnorm(block.feed_forward.w1.weight.data, 1))   # n_proj, n_embd
+            block.feed_forward.w2.weight.data.copy_(justnorm(block.feed_forward.w2.weight.data, 0))   # n_embd, n_proj
+            block.feed_forward.w3.weight.data.copy_(justnorm(block.feed_forward.w3.weight.data, 1))   # n_proj, n_embd
 
 def main(CIFAR: bool = False, model_type: str = ""):
     if CIFAR:
@@ -173,30 +205,29 @@ def main(CIFAR: bool = False, model_type: str = ""):
             ]
         )
         channels = 1
-        if model_type == "RWKV":
-            from New_RWKV import DiT_Llama
-        elif model_type == "test":
+        if model_type == "test":
             from dit_test import DiT_Llama
         elif model_type == "best":
             from dit_best import DiT_Llama
-        elif model_type == "Hyper":
-            from hyper_dit import DiT_Llama
         elif model_type == "SiT":
             from sit import DiT_Llama
+        elif model_type == "nDiT":
+            from ndit import DiT_Llama
+        elif model_type == "nDiT_test":
+            from nGPT import DiT_Llama
         else:
             from dit import DiT_Llama
         model = DiT_Llama(
-                channels, 32, dim=64, n_layers=5, n_heads=4, num_classes=10
+                channels, 32, dim=64, n_layers=4, n_heads=4, num_classes=10
             ).cuda()
 
     model_size = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Number of parameters: {model_size}, {model_size / 1e6:2f}M")
     
     hyperparameter_defaults = dict(
-        epochs = 7,
-        learning_rate = 2**-10,
-        initial_batch_size = 32,
-        max_batch_size = 256,
+        epochs = 3,
+        learning_rate = 2**-5.5,
+        batch_size = 256,
         beta_1 = 0.95,
         beta_2 = 0.95,
         shampoo_beta = 0.95,
@@ -204,24 +235,29 @@ def main(CIFAR: bool = False, model_type: str = ""):
         precondition_freq = 4,
         eps = 1e-7,
         model_size = model_size,
-        model_type = model_type
+        model_type = model_type,
+        betas=(0.9, 0.95)
     )
 
-    wandb.init(config=hyperparameter_defaults, project=f"rf_mnist")
+    wandb.init(config=hyperparameter_defaults, project=f"nGPT testing")
     config = wandb.config
     total_time = 0
+    
+    expected_loss = (model_size / 5.4 * 10**4)**(-0.107)
 
     rf = RF(model)
-    optimizer = SOAP(model.parameters(), lr=config.learning_rate, precondition_frequency=config.precondition_freq, 
-                     betas=(config.beta_1, config.beta_2), weight_decay=config.weight_decay)
-    # scheduler = optim.lr_scheduler.OneCycleLR(optimizer, max_lr=config.learning_rate, epochs=config.epochs, steps_per_epoch=int(6e+4//config.batch_size))
+    # if model_type == "nDiT_test":
+    #     normalize_matrices(rf.model)
+    optimizer = torch.optim.AdamW(rf.model.parameters(), lr=config.learning_rate, betas=config.betas, weight_decay=config.weight_decay)
+    from power_scheduler import PowerScheduler
+    scheduler = PowerScheduler(optimizer, config.batch_size, lr_max=config.learning_rate,
+                               warmup_percent=0.0, decay_percent=0.3, total_tokens=config.epochs*6e4)
 
     mnist = fdatasets(root="./data", train=True, download=True, transform=transform)
+    dataloader = DataLoader(mnist, batch_size=config.batch_size, shuffle=True, drop_last=True)
 
     for epoch in range(config.epochs):
         start_time = time.time()
-        current_batch_size = get_batch_size(epoch, config.initial_batch_size, config.max_batch_size, config.epochs, min_batch_size=8)
-        dataloader = DataLoader(mnist, batch_size=current_batch_size, shuffle=True, drop_last=True)
 
         lossbin = {i: 0 for i in range(10)}
         losscnt = {i: 1e-6 for i in range(10)}
@@ -231,14 +267,18 @@ def main(CIFAR: bool = False, model_type: str = ""):
             loss, blsct, loss_log = rf.forward(x, c)
             loss.backward()
             optimizer.step()
-            # scheduler.step()
+            scheduler.step()
 
-            wandb.log({"loss": loss_log.item()})
+            wandb.log({"loss": loss_log.item(),
+                       "score": expected_loss / loss_log.item()})
 
             # count based on t
             for t, l in blsct:
                 lossbin[int(t * 10)] += l
                 losscnt[int(t * 10)] += 1
+            
+            if model_type == "nDiT_test":
+                normalize_matrices(rf.model)
 
         # log
         for i in range(10):
@@ -293,6 +333,7 @@ if __name__ == "__main__":
     from torchvision.transforms import v2
     from torchvision.utils import make_grid
     from tqdm import tqdm
+    from power_scheduler import PowerScheduler
     import torch.nn.functional as F
     import copy, types
     import time

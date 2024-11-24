@@ -73,47 +73,61 @@ class LabelEmbedder(nn.Module):
         return embeddings
 
 
-class Attention(nn.Module):
-    def __init__(self, dim, n_heads):
+# Section 3.1 Tokenization using Complex Vectors (Replaces x_embedder)
+class ComplexTokenizer(nn.Module):
+    def __init__(self, in_channels, embedding_dim, input_size, patch_size):
         super().__init__()
+        self.in_channels = in_channels
+        self.embedding_dim = embedding_dim
+        self.input_size = input_size
+        self.patch_size = patch_size
+        self.num_patches = (input_size // patch_size) ** 2  # Calculate num_patches
+        self.proj = nn.Linear(patch_size * patch_size * in_channels, embedding_dim) # Projects patches to embedding_dim
+        self.pos_embed = nn.Parameter(torch.zeros(1, self.num_patches, embedding_dim * 2), requires_grad=False) # Complex embedding needs 2x space
 
-        self.n_heads = n_heads
-        self.n_rep = 1
-        self.head_dim = dim // n_heads
-
-        self.wq = nn.Linear(dim, n_heads * self.head_dim, bias=False)
-        self.wk = nn.Linear(dim, self.n_heads * self.head_dim, bias=False)
-        self.wv = nn.Linear(dim, self.n_heads * self.head_dim, bias=False)
-        self.wo = nn.Linear(n_heads * self.head_dim, dim, bias=False)
-
-        self.q_norm = nn.LayerNorm(self.n_heads * self.head_dim)
-        self.k_norm = nn.LayerNorm(self.n_heads * self.head_dim)
 
     def forward(self, x):
-        bsz, seqlen, _ = x.shape
+        B, C, H, W = x.shape
+        x = x.reshape(B, C, H//self.patch_size, self.patch_size, W//self.patch_size, self.patch_size)
+        x = x.permute(0, 2, 4, 1, 3, 5).flatten(3,5) # Split into patches [Batch, n_patches, patch_size*patch_size*channels]
+        x = self.proj(x)
 
-        xq, xk, xv = self.wq(x), self.wk(x), self.wv(x)
+        # Compute Global Semantic Vector (Magnitude)
+        magnitude = torch.norm(x, dim=2, keepdim=True) # Magnitude is the norm of the embedding vector across embedding dimensions
 
-        xq = self.q_norm(xq)
-        xk = self.k_norm(xk)
+        # Compute Phase (Local Semantics) - Simplified implementation
+        phase = torch.randn_like(magnitude) * math.pi # Using random initialization here for simplicity. Could be improved
 
-        xq = xq.view(bsz, seqlen, self.n_heads, self.head_dim)
-        xk = xk.view(bsz, seqlen, self.n_heads, self.head_dim)
-        xv = xv.view(bsz, seqlen, self.n_heads, self.head_dim)
+        # Combine Magnitude and Phase into a Complex Vector
+        complex_x = magnitude * torch.exp(1j * phase) # Using Euler's formula
 
-        output = F.scaled_dot_product_attention(
-            xq.permute(0, 2, 1, 3),
-            xk.permute(0, 2, 1, 3),
-            xv.permute(0, 2, 1, 3),
-            dropout_p=0.0,
-            is_causal=False,
-        ).permute(0, 2, 1, 3)
-        output = output.flatten(-2)
+        complex_x = complex_x.to(torch.cfloat) #Explicit cast to complex for next steps
+        complex_x = complex_x.view(B, self.num_patches, self.embedding_dim)
+        return complex_x + self.pos_embed # Add positional encoding
 
-        return self.wo(output)
+# Superposition Operations (Interference or Modulation)
+class Superposition(nn.Module):
+    def __init__(self, dim, mode='modulation'):
+        super().__init__()
+        self.mode = mode
+        self.linear1 = nn.Linear(dim, dim)
+        self.linear2 = nn.Linear(dim, dim)
+
+    def forward(self, x):  # x is complex
+        z1 = self.linear1(x.real) + 1j * self.linear1(x.imag) # Applying linear transform separately to real and imaginary parts
+        z2 = self.linear2(x.real) + 1j * self.linear2(x.imag)
 
 
-class FeedForward(nn.Module):
+        if self.mode == 'interference':
+            return z1 + z2
+        elif self.mode == 'modulation':
+            return z1 * z2
+        else:
+            raise ValueError(f"Invalid superposition mode: {self.mode}")
+
+
+# FeedForward network with complex support
+class ComplexFeedForward(nn.Module):
     def __init__(self, dim, hidden_dim, multiple_of, ffn_dim_multiplier=None):
         super().__init__()
         hidden_dim = int(2 * hidden_dim / 3)
@@ -121,35 +135,43 @@ class FeedForward(nn.Module):
             hidden_dim = int(ffn_dim_multiplier * hidden_dim)
         hidden_dim = multiple_of * ((hidden_dim + multiple_of - 1) // multiple_of)
 
-        self.w1 = nn.Linear(dim, hidden_dim, bias=False)
-        self.w2 = nn.Linear(hidden_dim, dim, bias=False)
-        self.w3 = nn.Linear(dim, hidden_dim, bias=False)
+        self.w1 = nn.Linear(dim, hidden_dim)
+        self.w2 = nn.Linear(hidden_dim, dim)
+        self.w3 = nn.Linear(dim, hidden_dim)
+
 
     def _forward_silu_gating(self, x1, x3):
-        return F.silu(x1) * x3
+        return torch.sin(x1) * x3
 
-    def forward(self, x):
-        return self.w2(self._forward_silu_gating(self.w1(x), self.w3(x)))
+    def forward(self, x): #x is complex
+        x1 = self.w1(x.real) + 1j * self.w1(x.imag)
+        x3 = self.w3(x.real) + 1j * self.w3(x.imag)
+        return self.w2(self._forward_silu_gating(x1, x3))
 
 
 class SiTBlock(nn.Module):
     """
     A SiT block with adaptive layer norm zero (adaLN-Zero) conditioning.
     """
-    def __init__(self, dim, n_heads, multiple_of, ffn_dim_multiplier, norm_eps):
+    def __init__(self, dim, multiple_of, ffn_dim_multiplier, norm_eps, superposition_mode="modulation"):
         super().__init__()
         self.norm1 = nn.LayerNorm(dim, elementwise_affine=False, eps=norm_eps)
-        self.attn = Attention(dim, n_heads)
+
+        self.superposition = Superposition(dim, mode=superposition_mode) # use superposition operation
+
         self.norm2 = nn.LayerNorm(dim, elementwise_affine=False, eps=norm_eps)
-        self.mlp = FeedForward(dim, 4 * dim, multiple_of, ffn_dim_multiplier)
+        self.mlp = ComplexFeedForward(dim, 4 * dim, multiple_of, ffn_dim_multiplier)
         self.adaLN_modulation = nn.Sequential(
             nn.SiLU(),
             nn.Linear(dim, 6 * dim, bias=True)
         )
 
-    def forward(self, x, c):
-        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(c).chunk(6, dim=1)
-        x = x + gate_msa.unsqueeze(1) * self.attn(modulate(self.norm1(x), shift_msa, scale_msa))
+
+    def forward(self, x, c): # x and c might be complex
+        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(c.real).chunk(6, dim=1) # Condition c is assumed real
+
+        x = x + gate_msa.unsqueeze(1) * self.superposition(modulate(self.norm1(x), shift_msa, scale_msa))
+
         x = x + gate_mlp.unsqueeze(1) * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
         return x
 
@@ -167,10 +189,10 @@ class FinalLayer(nn.Module):
             nn.Linear(hidden_size, 2 * hidden_size, bias=True)
         )
 
-    def forward(self, x, c):
-        shift, scale = self.adaLN_modulation(c).chunk(2, dim=1)
-        x = modulate(self.norm_final(x), shift, scale)
-        x = self.linear(x)
+    def forward(self, x, c):  # x may be complex, c is real.
+        shift, scale = self.adaLN_modulation(c.real).chunk(2, dim=1) # c assumed real
+        x = modulate(self.norm_final(x.real), shift, scale) # x's real part used in modulation
+        x = self.linear(x) # Linear transformation applied to result
         return x
 
 
@@ -192,23 +214,24 @@ class DiT_Llama(nn.Module):
         class_dropout_prob=0.1,
         num_classes=10,
         learn_sigma=True,
+        superposition_mode = "modulation",
     ):
         super().__init__()
         self.learn_sigma = learn_sigma
         self.in_channels = in_channels
         self.out_channels = in_channels * 2 if learn_sigma else in_channels
         self.patch_size = patch_size
-        self.n_heads = n_heads
 
-        self.x_embedder = PatchEmbed(input_size, patch_size, in_channels, dim, bias=True)
+        self.complex_tokenizer = ComplexTokenizer(in_channels, dim, input_size, patch_size)
         self.t_embedder = TimestepEmbedder(dim)
         self.y_embedder = LabelEmbedder(num_classes, dim, class_dropout_prob)
-        num_patches = self.x_embedder.num_patches
-        # Will use fixed sin-cos embedding:
-        self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, dim), requires_grad=False)
 
         self.blocks = nn.ModuleList([
-            SiTBlock(dim, n_heads, multiple_of, ffn_dim_multiplier, norm_eps) for _ in range(n_layers)
+            SiTBlock(dim,
+                     multiple_of,
+                     ffn_dim_multiplier,
+                     norm_eps,
+                     superposition_mode,)
         ])
         self.final_layer = FinalLayer(dim, patch_size, self.out_channels)
         self.initialize_weights()
@@ -221,15 +244,6 @@ class DiT_Llama(nn.Module):
                 if module.bias is not None:
                     nn.init.constant_(module.bias, 0)
         self.apply(_basic_init)
-
-        # Initialize (and freeze) pos_embed by sin-cos embedding:
-        pos_embed = self.get_2d_sincos_pos_embed(self.pos_embed.shape[-1], int(self.x_embedder.num_patches ** 0.5))
-        self.pos_embed.data.copy_(torch.from_numpy(pos_embed).float().unsqueeze(0))
-
-        # Initialize patch_embed like nn.Linear (instead of nn.Conv2d):
-        w = self.x_embedder.proj.weight.data
-        nn.init.xavier_uniform_(w.view([w.shape[0], -1]))
-        nn.init.constant_(self.x_embedder.proj.bias, 0)
 
         # Initialize label embedding table:
         nn.init.normal_(self.y_embedder.embedding_table.weight, std=0.02)
@@ -271,7 +285,7 @@ class DiT_Llama(nn.Module):
         t: (N,) tensor of diffusion timesteps
         y: (N,) tensor of class labels
         """
-        x = self.x_embedder(x) + self.pos_embed  # (N, T, D), where T = H * W / patch_size ** 2
+        x = self.complex_tokenizer(x)  # (N, T, D), where T = H * W / patch_size ** 2
         t = self.t_embedder(t)                   # (N, D)
         y = self.y_embedder(y, self.training)    # (N, D)
         c = t + y                                # (N, D)
