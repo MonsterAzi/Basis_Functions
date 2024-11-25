@@ -1,13 +1,27 @@
 import typer
 import torch
+import math
 
 class RF:
     def __init__(self, model, ln=True):
         self.model = model
         self.ln = ln
+        self.delta = 1
     
     def mse_loss(self, x):
         return x ** 2
+    
+    def mae_loss(self, x):
+        return torch.abs(x)
+    
+    def log_cosh_loss(self, x):
+        return torch.log(torch.cosh(x))
+    
+    def huber_loss(self, x):
+        abs = self.mae_loss(x)
+        quad_mask = (abs <= self.delta).float()
+        linearize = 1.0 - quad_mask
+        return (0.5 * self.mse_loss(x) * quad_mask) + (self.delta * (abs - (0.5 * self.delta)) * linearize)
 
     def forward(self, x, cond):
         b = x.size(0)
@@ -23,7 +37,7 @@ class RF:
         sim_compare = x + vtheta
         error = z1 - x - vtheta
         batchwise_mse = self.mse_loss(error).mean(dim=list(range(1, len(x.shape))))
-        batchwise_loss = self.mse_loss(error)
+        batchwise_loss = self.mae_loss(error)
         batchwise_loss = batchwise_loss.mean(dim=list(range(1, len(x.shape))))
         tlist = batchwise_loss.detach().cpu().reshape(-1).tolist()
         ttloss = [(tv, tloss) for tv, tloss in zip(t, tlist)]
@@ -119,8 +133,8 @@ def main(CIFAR: bool = False, model_type: str = ""):
     print(f"Number of parameters: {model_size}, {model_size / 1e6:2f}M")
     
     hyperparameter_defaults = dict(
-        epochs = 25,
-        learning_rate = 2**-7,
+        epochs = 18,
+        learning_rate = 2**-2,
         batch_size = 256,
         beta_1 = 0.95,
         beta_2 = 0.95,
