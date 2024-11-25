@@ -169,6 +169,7 @@ def main(CIFAR: bool = False, model_type: str = ""):
             # Stop when hit cut-off
             if loss_log.item() < 0.1:
                 stop = True
+                break
 
             # count based on t
             for t, l in blsct:
