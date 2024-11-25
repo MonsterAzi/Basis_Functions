@@ -120,7 +120,7 @@ def main(CIFAR: bool = False, model_type: str = ""):
     
     hyperparameter_defaults = dict(
         epochs = 25,
-        learning_rate = 2**-11,
+        learning_rate = 2**-7,
         batch_size = 256,
         beta_1 = 0.95,
         beta_2 = 0.95,
@@ -140,9 +140,9 @@ def main(CIFAR: bool = False, model_type: str = ""):
 
     rf = RF(model)
     optimizer = torch.optim.Adam(rf.model.parameters(), lr=config.learning_rate, betas=(config.beta_1, config.beta_2), weight_decay=config.weight_decay)
-    # from power_scheduler import PowerScheduler
-    # scheduler = PowerScheduler(optimizer, config.batch_size, lr_max=config.learning_rate,
-    #                            warmup_percent=0.05, decay_percent=0.35, total_tokens=config.epochs*6e4)
+    from power_scheduler import PowerScheduler
+    scheduler = PowerScheduler(optimizer, config.batch_size, lr_max=config.learning_rate,
+                               warmup_percent=0.05, decay_percent=0.35, total_tokens=config.epochs*6e4)
 
     mnist = fdatasets(root="./data", train=True, download=True, transform=transform)
     dataloader = DataLoader(mnist, batch_size=config.batch_size, shuffle=True, drop_last=True)
@@ -161,7 +161,7 @@ def main(CIFAR: bool = False, model_type: str = ""):
             loss, blsct, loss_log = rf.forward(x, c)
             loss.backward()
             optimizer.step()
-            # scheduler.step()
+            scheduler.step()
 
             wandb.log({"loss": loss_log.item(),
                        "score": expected_loss / loss_log.item()})
