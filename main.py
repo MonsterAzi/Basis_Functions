@@ -37,7 +37,7 @@ class RF:
         sim_compare = x + vtheta
         error = z1 - x - vtheta
         batchwise_mse = self.mse_loss(error).mean(dim=list(range(1, len(x.shape))))
-        batchwise_loss = self.mae_loss(error)
+        batchwise_loss = self.mse_loss(error)
         batchwise_loss = batchwise_loss.mean(dim=list(range(1, len(x.shape))))
         tlist = batchwise_loss.detach().cpu().reshape(-1).tolist()
         ttloss = [(tv, tloss) for tv, tloss in zip(t, tlist)]
@@ -133,13 +133,13 @@ def main(CIFAR: bool = False, model_type: str = ""):
     print(f"Number of parameters: {model_size}, {model_size / 1e6:2f}M")
     
     hyperparameter_defaults = dict(
-        epochs = 18,
-        learning_rate = 2**-2,
+        epochs = 16,
+        learning_rate = 2**-3,
         batch_size = 256,
         beta_1 = 0.95,
         beta_2 = 0.95,
         shampoo_beta = 0.95,
-        weight_decay = 0.0,
+        weight_decay = 0.01,
         precondition_freq = 4,
         eps = 1e-7,
         model_size = model_size,
@@ -153,10 +153,28 @@ def main(CIFAR: bool = False, model_type: str = ""):
     expected_loss = (model_size / 5.4 * 10**4)**(-0.107)
 
     rf = RF(model)
-    optimizer = torch.optim.Adam(rf.model.parameters(), lr=config.learning_rate, betas=(config.beta_1, config.beta_2), weight_decay=config.weight_decay)
+    
+    from muon import Muon
+    # Find ≥2D parameters in the body of the network -- these will be optimized by Muon
+    muon_params = [p for p in rf.model.layers.parameters() if p.ndim >= 2]
+    # Find everything else -- these will be optimized by AdamW
+    adamw_params = [p for p in rf.model.layers.parameters() if p.ndim < 2]
+    adamw_params.extend(rf.model.final_layer.parameters())
+    adamw_params.extend(rf.model.init_conv_seq.parameters())
+    adamw_params.extend(rf.model.t_embedder.parameters())
+    adamw_params.extend(rf.model.x_embedder.parameters())
+    adamw_params.extend(rf.model.y_embedder.parameters())
+    # Create the optimizer
+    optimizer1 = Muon(muon_params, lr=config.learning_rate, momentum=0.95)
+    optimizer2 = torch.optim.AdamW(adamw_params, lr=config.learning_rate, betas=(config.beta_1, config.beta_2), weight_decay=config.weight_decay)
+    optimizers = [optimizer1, optimizer2]
+    
     from power_scheduler import PowerScheduler
-    scheduler = PowerScheduler(optimizer, config.batch_size, lr_max=config.learning_rate,
-                               warmup_percent=0.05, decay_percent=0.35, total_tokens=config.epochs*6e4)
+    scheduler1 = PowerScheduler(optimizer1, config.batch_size, lr_max=config.learning_rate*2**3,
+                               warmup_percent=0.0, decay_percent=0.3, total_tokens=config.epochs*6e4)
+    scheduler2 = PowerScheduler(optimizer2, config.batch_size, lr_max=config.learning_rate,
+                               warmup_percent=0.05, decay_percent=0.3, total_tokens=config.epochs*6e4)
+    schedulers = [scheduler1, scheduler2]
 
     mnist = fdatasets(root="./data", train=True, download=True, transform=transform)
     dataloader = DataLoader(mnist, batch_size=config.batch_size, shuffle=True, drop_last=True)
@@ -171,11 +189,13 @@ def main(CIFAR: bool = False, model_type: str = ""):
         losscnt = {i: 1e-6 for i in range(10)}
         for i, (x, c) in tqdm(enumerate(dataloader)):
             x, c = x.cuda(), c.cuda()
-            optimizer.zero_grad()
+            for opt in optimizers:
+                opt.zero_grad()
             loss, blsct, loss_log = rf.forward(x, c)
             loss.backward()
-            optimizer.step()
-            scheduler.step()
+            for opt, sched in zip(optimizers, schedulers):
+                opt.step()
+                sched.step()
 
             wandb.log({"loss": loss_log.item(),
                        "score": expected_loss / loss_log.item()})
