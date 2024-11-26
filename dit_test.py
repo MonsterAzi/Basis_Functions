@@ -88,6 +88,8 @@ class Attention(nn.Module):
 
         self.q_norm = nn.RMSNorm(self.n_heads * self.head_dim)
         self.k_norm = nn.RMSNorm(self.n_heads * self.head_dim)
+        
+        self.lamb = nn.Parameter(torch.tensor(0.0))
 
     @staticmethod
     def reshape_for_broadcast(freqs_cis, x):
@@ -109,7 +111,7 @@ class Attention(nn.Module):
         xk_out = torch.view_as_real(xk_ * freqs_cis_xk).flatten(3)
         return xq_out, xk_out
 
-    def forward(self, x, freqs_cis):
+    def forward(self, x, freqs_cis, v1=None):
         bsz, seqlen, _ = x.shape
 
         xq, xk, xv = self.wq(x), self.wk(x), self.wv(x)
@@ -122,6 +124,10 @@ class Attention(nn.Module):
         xq = xq.view(bsz, seqlen, self.n_heads, self.head_dim)
         xk = xk.view(bsz, seqlen, self.n_heads, self.head_dim)
         xv = xv.view(bsz, seqlen, self.n_heads, self.head_dim)
+        
+        if v1 is None:
+            v1 = xv # This happens if we are in the first block. v needs to be accessed by subsequent blocks
+        xv = xv + self.lamb * (v1.view_as(xv) - xv)
 
         xq, xk = self.apply_rotary_emb(xq, xk, freqs_cis=freqs_cis)
         xq, xk = xq.to(dtype), xk.to(dtype)
@@ -135,7 +141,7 @@ class Attention(nn.Module):
         ).permute(0, 2, 1, 3)
         output = output.flatten(-2)
 
-        return self.wo(output)
+        return self.wo(output), v1
 
 
 class FeedForward(nn.Module):
@@ -186,24 +192,29 @@ class TransformerBlock(nn.Module):
             nn.SiLU(),
             nn.Linear(min(dim, 1024), 6 * dim, bias=True),
         )
+        
+        self.lamb = nn.Parameter(torch.tensor(0.0))
 
-    def forward(self, x, freqs_cis, adaln_input=None):
+    def forward(self, x, freqs_cis, v1, x0, adaln_input=None):
         if adaln_input is not None:
             shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = (
                 self.adaLN_modulation(adaln_input).chunk(6, dim=1)
             )
-
-            x = x + gate_msa.unsqueeze(1) * self.attention(
-                modulate(self.attention_norm(x), shift_msa, scale_msa), freqs_cis
+            x = x + self.lamb * (x0 - x)
+            x1, v1 = self.attention(
+                modulate(self.attention_norm(x), shift_msa, scale_msa), freqs_cis, v1
             )
+            x = x + gate_msa.unsqueeze(1) * x1
             x = x + gate_mlp.unsqueeze(1) * self.feed_forward(
                 modulate(self.ffn_norm(x), shift_mlp, scale_mlp)
             )
         else:
-            x = x + self.attention(self.attention_norm(x), freqs_cis)
+            x = x + self.lamb * (x0 - x)
+            x1, v1 = self.attention(self.attention_norm(x), freqs_cis, v1)
+            x = x + x1
             x = x + self.feed_forward(self.ffn_norm(x))
 
-        return x
+        return x, v1
 
 
 class FinalLayer(nn.Module):
@@ -211,7 +222,7 @@ class FinalLayer(nn.Module):
         super().__init__()
         self.norm_final = nn.RMSNorm(hidden_size, elementwise_affine=False, eps=1e-6)
         self.linear = nn.Linear(
-            hidden_size, patch_size * patch_size * out_channels, bias=True
+            hidden_size, patch_size * patch_size * out_channels, bias=False
         )
         self.adaLN_modulation = nn.Sequential(
             nn.SiLU(),
@@ -219,7 +230,7 @@ class FinalLayer(nn.Module):
         )
         # # init zero
         nn.init.constant_(self.linear.weight, 0)
-        nn.init.constant_(self.linear.bias, 0)
+        # nn.init.constant_(self.linear.bias, 0)
 
     def forward(self, x, c):
         shift, scale = self.adaLN_modulation(c).chunk(2, dim=1)
@@ -261,7 +272,6 @@ class DiT_Llama(nn.Module):
 
         self.x_embedder = nn.Linear(patch_size * patch_size * dim // 2, dim, bias=True)
         nn.init.constant_(self.x_embedder.bias, 0)
-        self.embd_norm = nn.RMSNorm(dim, eps=norm_eps)
 
         self.t_embedder = TimestepEmbedder(min(dim, 1024))
         self.y_embedder = LabelEmbedder(num_classes, min(dim, 1024), class_dropout_prob)
@@ -312,17 +322,20 @@ class DiT_Llama(nn.Module):
 
         x = self.patchify(x)
         x = self.x_embedder(x)
-        x = self.embd_norm(x)
 
         t = self.t_embedder(t)  # (N, D)
         y = self.y_embedder(y, self.training)  # (N, D)
         adaln_input = t.to(x.dtype) + y.to(x.dtype)
+        
+        v1 = None
+        x0 = x
 
         for layer in self.layers:
-            x = layer(x, self.freqs_cis[: x.size(1)], adaln_input=adaln_input)
+            x, v1 = layer(x, self.freqs_cis[: x.size(1)], v1, x0, adaln_input=adaln_input)
 
         x = self.final_layer(x, adaln_input)
         x = self.unpatchify(x)  # (N, out_channels, H, W)
+        x = 30 * torch.tanh(x / 30)
         
         return x.float()
 

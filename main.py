@@ -133,8 +133,8 @@ def main(CIFAR: bool = False, model_type: str = ""):
     print(f"Number of parameters: {model_size}, {model_size / 1e6:2f}M")
     
     hyperparameter_defaults = dict(
-        epochs = 5,
-        learning_rate = 2**-4,
+        epochs = 7,
+        learning_rate = 2**-6,
         batch_size = 256,
         beta_1 = 0.95,
         beta_2 = 0.95,
