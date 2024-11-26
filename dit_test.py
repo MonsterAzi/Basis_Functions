@@ -151,11 +151,11 @@ class FeedForward(nn.Module):
         nn.init.zeros_(self.w2.weight)
         self.w3 = nn.Linear(dim, hidden_dim, bias=False)
 
-    def _forward_relu2_gating(self, x1, x3):
-        return F.relu(x1).square() * x3
+    def _forward_sine_gating(self, x1, x3):
+        return torch.sin(x1) * x3
 
     def forward(self, x):
-        return self.w2(self._forward_relu2_gating(self.w1(x), self.w3(x)))
+        return self.w2(self._forward_sine_gating(self.w1(x), self.w3(x)))
 
 
 class TransformerBlock(nn.Module):
@@ -261,6 +261,7 @@ class DiT_Llama(nn.Module):
 
         self.x_embedder = nn.Linear(patch_size * patch_size * dim // 2, dim, bias=True)
         nn.init.constant_(self.x_embedder.bias, 0)
+        self.embd_norm = nn.RMSNorm(dim, eps=norm_eps)
 
         self.t_embedder = TimestepEmbedder(min(dim, 1024))
         self.y_embedder = LabelEmbedder(num_classes, min(dim, 1024), class_dropout_prob)
@@ -311,6 +312,7 @@ class DiT_Llama(nn.Module):
 
         x = self.patchify(x)
         x = self.x_embedder(x)
+        x = self.embd_norm(x)
 
         t = self.t_embedder(t)  # (N, D)
         y = self.y_embedder(y, self.training)  # (N, D)
