@@ -88,14 +88,11 @@ class Attention(nn.Module):
 
         self.q_norm = nn.RMSNorm(self.n_heads * self.head_dim)
         self.k_norm = nn.RMSNorm(self.n_heads * self.head_dim)
-        
-        self.lamb = nn.Parameter(torch.tensor(0.0))
 
     @staticmethod
     def reshape_for_broadcast(freqs_cis, x):
         ndim = x.ndim
         assert 0 <= 1 < ndim
-        # assert freqs_cis.shape == (x.shape[1], x.shape[-1])
         _freqs_cis = freqs_cis[: x.shape[1]]
         shape = [d if i == 1 or i == ndim - 1 else 1 for i, d in enumerate(x.shape)]
         return _freqs_cis.view(*shape)
@@ -111,7 +108,7 @@ class Attention(nn.Module):
         xk_out = torch.view_as_real(xk_ * freqs_cis_xk).flatten(3)
         return xq_out, xk_out
 
-    def forward(self, x, freqs_cis, v1=None):
+    def forward(self, x, freqs_cis):
         bsz, seqlen, _ = x.shape
 
         xq, xk, xv = self.wq(x), self.wk(x), self.wv(x)
@@ -124,10 +121,6 @@ class Attention(nn.Module):
         xq = xq.view(bsz, seqlen, self.n_heads, self.head_dim)
         xk = xk.view(bsz, seqlen, self.n_heads, self.head_dim)
         xv = xv.view(bsz, seqlen, self.n_heads, self.head_dim)
-        
-        if v1 is None:
-            v1 = xv # This happens if we are in the first block. v needs to be accessed by subsequent blocks
-        xv = xv + self.lamb * (v1.view_as(xv) - xv)
 
         xq, xk = self.apply_rotary_emb(xq, xk, freqs_cis=freqs_cis)
         xq, xk = xq.to(dtype), xk.to(dtype)
@@ -141,7 +134,7 @@ class Attention(nn.Module):
         ).permute(0, 2, 1, 3)
         output = output.flatten(-2)
 
-        return self.wo(output), v1
+        return self.wo(output)
 
 
 class FeedForward(nn.Module):
@@ -192,29 +185,25 @@ class TransformerBlock(nn.Module):
             nn.SiLU(),
             nn.Linear(min(dim, 1024), 6 * dim, bias=True),
         )
-        
-        self.lamb = nn.Parameter(torch.tensor(0.0))
 
-    def forward(self, x, freqs_cis, v1, x0, adaln_input=None):
+    def forward(self, x, freqs_cis, adaln_input=None):
         if adaln_input is not None:
             shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = (
                 self.adaLN_modulation(adaln_input).chunk(6, dim=1)
             )
-            x = x + self.lamb * (x0 - x)
-            x1, v1 = self.attention(
-                modulate(self.attention_norm(x), shift_msa, scale_msa), freqs_cis, v1
+            x1 = self.attention(
+                modulate(self.attention_norm(x), shift_msa, scale_msa), freqs_cis
             )
             x = x + gate_msa.unsqueeze(1) * x1
             x = x + gate_mlp.unsqueeze(1) * self.feed_forward(
                 modulate(self.ffn_norm(x), shift_mlp, scale_mlp)
             )
         else:
-            x = x + self.lamb * (x0 - x)
-            x1, v1 = self.attention(self.attention_norm(x), freqs_cis, v1)
+            x1 = self.attention(self.attention_norm(x), freqs_cis)
             x = x + x1
             x = x + self.feed_forward(self.ffn_norm(x))
 
-        return x, v1
+        return x
 
 
 class FinalLayer(nn.Module):
@@ -228,9 +217,8 @@ class FinalLayer(nn.Module):
             nn.SiLU(),
             nn.Linear(min(hidden_size, 1024), 2 * hidden_size, bias=True),
         )
-        # # init zero
+        # init zero
         nn.init.constant_(self.linear.weight, 0)
-        # nn.init.constant_(self.linear.bias, 0)
 
     def forward(self, x, c):
         shift, scale = self.adaLN_modulation(c).chunk(2, dim=1)
@@ -289,6 +277,7 @@ class DiT_Llama(nn.Module):
                 for layer_id in range(n_layers)
             ]
         )
+        
         self.final_layer = FinalLayer(dim, patch_size, self.out_channels)
 
         self.freqs_cis = self.precompute_freqs_cis(dim // n_heads, 4096)
@@ -327,11 +316,8 @@ class DiT_Llama(nn.Module):
         y = self.y_embedder(y, self.training)  # (N, D)
         adaln_input = t.to(x.dtype) + y.to(x.dtype)
         
-        v1 = None
-        x0 = x
-
         for layer in self.layers:
-            x, v1 = layer(x, self.freqs_cis[: x.size(1)], v1, x0, adaln_input=adaln_input)
+            x = layer(x, self.freqs_cis[: x.size(1)], adaln_input=adaln_input)
 
         x = self.final_layer(x, adaln_input)
         x = self.unpatchify(x)  # (N, out_channels, H, W)

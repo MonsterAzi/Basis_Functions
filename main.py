@@ -38,6 +38,14 @@ class RF:
         error = z1 - x - vtheta
         batchwise_mse = self.mse_loss(error).mean(dim=list(range(1, len(x.shape))))
         batchwise_loss = self.mse_loss(error)
+
+        # --- Sigmoid Weighting ---
+        lambda_val = -3  # The 'b' parameter from the paper (you'll need to tune this)
+        log_snr = torch.log((1 - texp) ** 2 / (texp ** 2)) # assuming variance preserving diffusion
+
+        sigmoid_weight = torch.sigmoid(lambda_val + log_snr)
+        batchwise_loss = sigmoid_weight * batchwise_mse  # Element-wise multiplication
+        
         batchwise_loss = batchwise_loss.mean(dim=list(range(1, len(x.shape))))
         tlist = batchwise_loss.detach().cpu().reshape(-1).tolist()
         ttloss = [(tv, tloss) for tv, tloss in zip(t, tlist)]
@@ -134,7 +142,7 @@ def main(CIFAR: bool = False, model_type: str = ""):
     
     hyperparameter_defaults = dict(
         epochs = 7,
-        learning_rate = 2**-6,
+        learning_rate = 2**-6.5,
         batch_size = 256,
         beta_1 = 0.95,
         beta_2 = 0.95,
